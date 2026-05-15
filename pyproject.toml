@@ -1,0 +1,13 @@
+[project]
+name = "salvai-be"
+version = "0.1.0"
+description = "Salvai backend API"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.136.1",
+    "instaloader>=4.15.1",
+    "uvicorn[standard]>=0.47.0",
+]
+
+[tool.uv]
+dev-dependencies = []
