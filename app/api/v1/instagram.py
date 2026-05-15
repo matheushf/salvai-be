@@ -1,20 +1,45 @@
-from fastapi import APIRouter, HTTPException, Query
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException, Query, Security, status
+from fastapi.security.api_key import APIKeyHeader
+
+from app.core.config import get_settings
 from app.schemas.instagram import PostMetadataResponse
 from app.services.instagram_scraper import InstagramScraperError, get_post_metadata
 
 router = APIRouter(prefix="/instagram", tags=["instagram"])
 
+_api_key_header = APIKeyHeader(name="X-Api-Key", auto_error=False)
+
+
+def _verify_api_key(key: Annotated[str | None, Security(_api_key_header)]) -> None:
+    """
+    Optional API-key guard for the Instagram scraper.
+
+    When INSTAGRAM_API_KEY is configured in the environment, this dependency
+    rejects requests that omit or mismatch the header.  When the env var is
+    empty (the default), any request is accepted — suitable for local dev.
+    """
+    settings = get_settings()
+    expected = settings.instagram_api_key
+    if expected and key != expected:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing or invalid X-Api-Key header",
+        )
+
 
 @router.get(
     "/post",
     response_model=PostMetadataResponse,
+    dependencies=[Depends(_verify_api_key)],
     summary="Get normalized Instagram post or reel metadata",
     description=(
         "Returns normalized metadata for a single Instagram post or reel. "
         "The response shape matches the frontend enrichment contract. "
         "Accepts either a full Instagram URL (post or reel) or a bare shortcode. "
-        "No media files are downloaded."
+        "No media files are downloaded. "
+        "Requires X-Api-Key header when INSTAGRAM_API_KEY is configured."
     ),
 )
 def get_post(

@@ -1,6 +1,6 @@
 # salvai-be
 
-Small Python backend built with FastAPI, managed with [uv](https://docs.astral.sh/uv/).
+Python backend built with FastAPI, managed with [uv](https://docs.astral.sh/uv/).
 
 ## Requirements
 
@@ -11,7 +11,20 @@ Small Python backend built with FastAPI, managed with [uv](https://docs.astral.s
 
 ```bash
 uv sync
+cp .env.example .env   # fill in your Supabase credentials
 ```
+
+Environment variables (see `.env.example` for descriptions):
+
+| Variable | Required |
+|---|---|
+| `SUPABASE_URL` | Yes |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes |
+| `SUPABASE_JWT_SECRET` | Yes |
+| `CORS_ALLOWED_ORIGINS` | Yes |
+| `PORT` | Auto (Railway injects this) |
+
+All three Supabase values are in your **Supabase Dashboard → Project Settings → API**.
 
 ## Running locally
 
@@ -33,23 +46,31 @@ Or via Docker:
 
 ```bash
 docker build -t salvai-be .
-docker run -p 8000:8000 -e CORS_ALLOWED_ORIGINS="https://your-frontend.com" salvai-be
+docker run -p 8000:8000 \
+  -e SUPABASE_URL="..." \
+  -e SUPABASE_SERVICE_ROLE_KEY="..." \
+  -e SUPABASE_JWT_SECRET="..." \
+  -e CORS_ALLOWED_ORIGINS="https://your-frontend.com" \
+  salvai-be
 ```
 
 ## Deploying on Railway
 
 1. Create a new Railway service pointing to this repository.
-2. Set **Root Directory** to `salvai-be` (this folder) in the Railway service settings.
+2. Set **Root Directory** to `salvai-be` in the Railway service settings.
 3. Railway will automatically detect and use the `Dockerfile`.
-4. Set the following environment variables in the Railway service:
+4. Set environment variables in the Railway dashboard (see table above).
+5. Set the healthcheck path to `/health`.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `CORS_ALLOWED_ORIGINS` | Yes | Comma-separated list of allowed frontend origins, e.g. `https://app.example.com` |
-| `PORT` | Auto | Injected by Railway — do not set manually |
+## Authentication
 
-5. Set the healthcheck path to `/health` in Railway's health check settings.
-6. After deploy, verify the endpoint: `GET /api/v1/instagram/post?identifier=<shortcode>`
+All social endpoints require a valid Supabase JWT in the `Authorization` header:
+
+```
+Authorization: Bearer <supabase_access_token>
+```
+
+The frontend obtains this token from `supabase.auth.getSession()` and passes it with every request. The backend validates the token locally using the `SUPABASE_JWT_SECRET` (no extra HTTP round-trip).
 
 ## Endpoints
 
@@ -59,70 +80,108 @@ docker run -p 8000:8000 -e CORS_ALLOWED_ORIGINS="https://your-frontend.com" salv
 GET /health
 ```
 
-Returns `{"status": "ok"}`.
-
-### Instagram post / reel metadata
+### Instagram (public)
 
 ```
 GET /api/v1/instagram/post?identifier=<url_or_shortcode>
 ```
 
-Returns normalized metadata for a single public Instagram post or reel. No media is downloaded.
+### Profiles (authenticated)
 
-Accepts either a full URL or a bare shortcode:
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `identifier` | query (required) | Full post/reel URL or shortcode |
-
-**Example requests:**
-
-```bash
-# by shortcode
-curl "http://localhost:8000/api/v1/instagram/post?identifier=ABC123"
-
-# by URL
-curl "http://localhost:8000/api/v1/instagram/post?identifier=https://www.instagram.com/p/ABC123/"
-
-# reel URL
-curl "http://localhost:8000/api/v1/instagram/post?identifier=https://www.instagram.com/reel/ABC123/"
+```
+GET    /api/v1/profiles/me            # current user's profile
+PATCH  /api/v1/profiles/me            # update current user's profile
+GET    /api/v1/profiles/{user_id}     # any user's public profile
 ```
 
-**Example response:**
+### Follows (authenticated)
 
-```json
-{
-  "platform": "instagram",
-  "kind": "image",
-  "description": "Caption text...",
-  "thumbnailUrl": "https://...",
-  "authorHandle": "nasa",
-  "publishedAt": "2026-05-14T12:00:00+00:00"
-}
+```
+GET    /api/v1/follows/me             # list users the current user follows
+POST   /api/v1/follows/{user_id}      # follow a user → 201
+DELETE /api/v1/follows/{user_id}      # unfollow a user → 204
 ```
 
-**Error responses:**
+### Events (authenticated)
 
-| Status | Reason |
-|--------|--------|
-| `404` | Post does not exist |
-| `403` | Post is from a private account or requires login |
-| `429` | Instagram rate limit reached |
-| `502` | Upstream connection or scraper error |
+```
+POST   /api/v1/events                 # create an event → 201
+GET    /api/v1/events/{event_id}      # get a single event
+DELETE /api/v1/events/{event_id}      # delete own event → 204
+```
+
+### Feed (authenticated)
+
+```
+GET /api/v1/feed?cursor=<iso_ts>&limit=<n>
+```
+
+Returns events from users the current user follows, newest first.
+Cursor-based pagination: use `next_cursor` from the response as the `cursor` param on the next request.
+
+## Feed performance
+
+The v1 feed is computed on read: for each request it fetches the follow list and then queries events authored by those users. This is simple and correct for small to medium follow graphs.
+
+**When to upgrade:** if you observe slow feed responses (> 200 ms p95) and the follow list is large (hundreds+), consider moving to a precomputed fan-out table:
+
+1. Add a `feed_items (user_id, event_id, created_at)` table.
+2. Populate it via a Postgres trigger on `events` insert that inserts one row per follower.
+3. Replace the `feed_service.py` query to hit this denormalized table directly.
 
 ## Project structure
 
 ```
 app/
-├── main.py              # FastAPI app entrypoint
+├── main.py
+├── core/
+│   ├── config.py          # pydantic-settings: SUPABASE_*, CORS
+│   ├── supabase.py        # admin client (service_role, cached)
+│   └── auth.py            # get_current_user dependency + CurrentUser type
 ├── api/
 │   └── v1/
-│       ├── __init__.py  # v1 router aggregation
-│       └── instagram.py # GET /api/v1/instagram/post
+│       ├── __init__.py    # aggregates all v1 routers
+│       ├── instagram.py   # GET /api/v1/instagram/post
+│       ├── profiles.py    # /api/v1/profiles/*
+│       ├── follows.py     # /api/v1/follows/*
+│       ├── events.py      # /api/v1/events/*
+│       └── feed.py        # /api/v1/feed
 ├── schemas/
-│   └── instagram.py     # PostMetadataResponse, PostLocation
+│   ├── user.py            # AuthenticatedUser
+│   ├── profile.py         # ProfileResponse, ProfileUpdate
+│   ├── follow.py          # FollowResponse, FollowingListResponse
+│   ├── event.py           # EventCreate, EventResponse
+│   ├── feed.py            # FeedItem, FeedPage
+│   └── instagram.py       # PostMetadataResponse
 └── services/
-    └── instagram_scraper.py  # shortcode_from_identifier + get_post_metadata
+    ├── profiles.py        # get_profile, upsert_profile
+    ├── follows.py         # follow_user, unfollow_user, list_following
+    ├── events_service.py  # create_event, get_event, delete_event
+    ├── feed_service.py    # get_feed (read-time aggregation)
+    └── instagram_scraper.py
 ```
 
-> **Note:** Instaloader fetches publicly available data only. For private profiles, Instagram authentication would be required. Be mindful of Instagram rate limits when making frequent requests.
+## Database
+
+Full local setup, every `.env` variable, and smoke-test details: **[`docs/salvai-be-setup-and-env.md`](../docs/salvai-be-setup-and-env.md)**.
+
+Schema migrations live in [`../supabase/migrations/`](../supabase/migrations/) (repo root). See **[`../supabase/README.md`](../supabase/README.md)** for applying them (`supabase link`, `supabase db push`, or SQL Editor).
+
+### Verify environment
+
+After `cp .env.example .env`, confirm required variables load (nothing secret is printed in full):
+
+```bash
+uv run python scripts/verify_env.py
+```
+
+### Smoke test (API + database)
+
+With the API running and migrations applied, exercise authenticated routes using a Supabase user **access token** (same JWT the frontend sends):
+
+```bash
+export SUPABASE_ACCESS_TOKEN='<access_token from supabase.auth.getSession()>'
+uv run python scripts/smoke_social_api.py
+```
+
+Optional: `SALVAI_API_BASE=http://127.0.0.1:8000` if the server is not on the default host/port.
