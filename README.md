@@ -23,6 +23,34 @@ The API will be available at `http://localhost:8000`.
 
 Interactive docs: `http://localhost:8000/docs`
 
+## Running in production
+
+```bash
+uv run uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+```
+
+Or via Docker:
+
+```bash
+docker build -t salvai-be .
+docker run -p 8000:8000 -e CORS_ALLOWED_ORIGINS="https://your-frontend.com" salvai-be
+```
+
+## Deploying on Railway
+
+1. Create a new Railway service pointing to this repository.
+2. Set **Root Directory** to `salvai-be` (this folder) in the Railway service settings.
+3. Railway will automatically detect and use the `Dockerfile`.
+4. Set the following environment variables in the Railway service:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `CORS_ALLOWED_ORIGINS` | Yes | Comma-separated list of allowed frontend origins, e.g. `https://app.example.com` |
+| `PORT` | Auto | Injected by Railway — do not set manually |
+
+5. Set the healthcheck path to `/health` in Railway's health check settings.
+6. After deploy, verify the endpoint: `GET /api/v1/instagram/post?identifier=<shortcode>`
+
 ## Endpoints
 
 ### Health
