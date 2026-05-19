@@ -51,6 +51,7 @@ def get_feed(
         client.table(_EVENTS_TABLE)
         .select("*")
         .in_("author_id", followed_ids)
+        .eq("visible_in_feed", True)
         .order("created_at", desc=True)
         .limit(limit + 1)  # fetch one extra to detect if there are more pages
     )
@@ -77,9 +78,12 @@ def get_feed(
         .in_("id", author_ids)
         .execute()
     )
-    profile_by_id: dict[str, ProfileResponse] = {
-        row["id"]: ProfileResponse(**row) for row in (profiles_resp.data or [])
-    }
+    profile_by_id: dict[str, ProfileResponse] = {}
+    for row in profiles_resp.data or []:
+        interests = row.get("interests")
+        if interests is None:
+            row = {**row, "interests": []}
+        profile_by_id[row["id"]] = ProfileResponse(**row)
 
     # 4. Assemble feed items, skipping any events whose author profile is missing.
     items: list[FeedItem] = []

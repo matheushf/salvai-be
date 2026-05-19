@@ -147,6 +147,9 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
+# Local-only state for scripts/seed_fake_users.py → scripts/delete_fake_users.py
+.salvai-fake-users.state.json
+
 # Environments
 .env
 .envrc

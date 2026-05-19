@@ -89,9 +89,10 @@ GET /api/v1/instagram/post?identifier=<url_or_shortcode>
 ### Profiles (authenticated)
 
 ```
-GET    /api/v1/profiles/me            # current user's profile
-PATCH  /api/v1/profiles/me            # update current user's profile
-GET    /api/v1/profiles/{user_id}     # any user's public profile
+GET    /api/v1/profiles/me                      # current user's profile
+PATCH  /api/v1/profiles/me                      # update current user's profile
+GET    /api/v1/profiles/{user_id}/upcoming-events   # upcoming profile moments (≤2 for non-owners; owner gets all upcoming within cap for client merge)
+GET    /api/v1/profiles/{user_id}               # any user's public profile
 ```
 
 ### Follows (authenticated)
@@ -105,10 +106,14 @@ DELETE /api/v1/follows/{user_id}      # unfollow a user → 204
 ### Events (authenticated)
 
 ```
-POST   /api/v1/events                 # create an event → 201
-GET    /api/v1/events/{event_id}      # get a single event
+POST   /api/v1/events                 # create an event → 201 (body may include `visible_in_feed`, default false)
+GET    /api/v1/events/me             # list my events (optional `cursor`, `limit`) → newest first
+PATCH  /api/v1/events/{event_id}     # update own event (partial body)
+GET    /api/v1/events/{event_id}     # get one event (author or follows author + event is public on feed)
 DELETE /api/v1/events/{event_id}      # delete own event → 204
 ```
+
+Private events (`visible_in_feed: false`) are only visible to the author. The social feed lists only followed users’ events with `visible_in_feed: true`.
 
 ### Feed (authenticated)
 
@@ -150,11 +155,11 @@ app/
 │   ├── user.py            # AuthenticatedUser
 │   ├── profile.py         # ProfileResponse, ProfileUpdate
 │   ├── follow.py          # FollowResponse, FollowingListResponse
-│   ├── event.py           # EventCreate, EventResponse
+│   ├── event.py           # EventCreate, EventUpdate, EventResponse, EventListPage, ProfileUpcomingEventsResponse
 │   ├── feed.py            # FeedItem, FeedPage
 │   └── instagram.py       # PostMetadataResponse
 └── services/
-    ├── profiles.py        # get_profile, upsert_profile
+    ├── profiles.py        # get_profile, get_my_profile, upsert_profile
     ├── follows.py         # follow_user, unfollow_user, list_following
     ├── events_service.py  # create_event, get_event, delete_event
     ├── feed_service.py    # get_feed (read-time aggregation)

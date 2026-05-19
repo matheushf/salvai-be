@@ -93,6 +93,8 @@ def main() -> int:
     if code != 200:
         print(b.decode(errors="replace"), file=sys.stderr)
         return 1
+    my_profile = json.loads(b.decode())
+    my_id = my_profile.get("id") if isinstance(my_profile, dict) else None
 
     code, b = _request(
         "POST",
@@ -100,8 +102,10 @@ def main() -> int:
         token=token,
         body={
             "title": "Smoke event",
-            "date": "01/01/2026",
+            "date": "15/06/2030",
             "location": "Test venue",
+            "visible_in_feed": True,
+            "category": "Music",
         },
     )
     print(f"POST /api/v1/events -> {code}")
@@ -110,6 +114,30 @@ def main() -> int:
         return 1
     event_id = json.loads(b.decode())["id"]
     print(f"  event_id={event_id}")
+
+    code, b = _request("GET", f"{base}/api/v1/events/me", token=token)
+    print(f"GET /api/v1/events/me -> {code}")
+    if code != 200:
+        print(b.decode(errors="replace"), file=sys.stderr)
+        return 1
+
+    if my_id:
+        code, b = _request("GET", f"{base}/api/v1/profiles/{my_id}/upcoming-events", token=token)
+        print(f"GET /api/v1/profiles/{{user_id}}/upcoming-events -> {code}")
+        if code != 200:
+            print(b.decode(errors="replace"), file=sys.stderr)
+            return 1
+
+    code, b = _request(
+        "PATCH",
+        f"{base}/api/v1/events/{event_id}",
+        token=token,
+        body={"title": "Smoke event (patched)"},
+    )
+    print(f"PATCH /api/v1/events/{{id}} -> {code}")
+    if code != 200:
+        print(b.decode(errors="replace"), file=sys.stderr)
+        return 1
 
     code, _ = _request("GET", f"{base}/api/v1/feed", token=token)
     print(f"GET /api/v1/feed -> {code}")

@@ -18,7 +18,7 @@ def follow_user(client: Client, follower_id: str, followed_id: str) -> FollowRes
         .maybe_single()
         .execute()
     )
-    if existing.data:
+    if existing is not None:
         raise ConflictError("Already following this user")
 
     response = (
