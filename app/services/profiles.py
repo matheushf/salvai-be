@@ -40,6 +40,7 @@ def _to_me(row: dict) -> ProfileMeResponse:
     return ProfileMeResponse(
         **_to_public(row).model_dump(),
         email=row.get("email"),
+        birth_date=row.get("birth_date"),
     )
 
 

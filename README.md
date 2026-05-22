@@ -29,7 +29,13 @@ All three Supabase values are in your **Supabase Dashboard → Project Settings 
 ## Running locally
 
 ```bash
-uv run uvicorn app.main:app --reload
+uv run task dev
+```
+
+Or run uvicorn directly:
+
+```bash
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 The API will be available at `http://localhost:8000`.
