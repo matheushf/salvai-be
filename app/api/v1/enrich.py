@@ -19,6 +19,16 @@ router = APIRouter(prefix="/enrich", tags=["enrich"])
         "enrichment contract."
     ),
 )
+@router.get(
+    "/",
+    response_model=PostMetadataResponse,
+    summary="Enrich a URL with metadata",
+    description=(
+        "Returns normalized metadata for a supported URL (Instagram, TikTok, "
+        "or generic web page). The response shape matches the frontend "
+        "enrichment contract."
+    ),
+)
 def get_enrich(
     url: str = Query(
         ...,
