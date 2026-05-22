@@ -53,3 +53,15 @@ def list_following(client: Client, user_id: str) -> FollowingListResponse:
     )
     items = [FollowResponse(**row) for row in (response.data or [])]
     return FollowingListResponse(items=items, total=len(items))
+
+
+def list_followers(client: Client, user_id: str) -> FollowingListResponse:
+    response = (
+        client.table(_TABLE)
+        .select("*")
+        .eq("followed_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    items = [FollowResponse(**row) for row in (response.data or [])]
+    return FollowingListResponse(items=items, total=len(items))

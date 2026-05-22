@@ -17,6 +17,15 @@ def list_my_following(current_user: CurrentUser, client: AdminClient) -> Followi
     return follow_svc.list_following(client, current_user.id)
 
 
+@router.get(
+    "/me/followers",
+    response_model=FollowingListResponse,
+    summary="List users who follow the current user",
+)
+def list_my_followers(current_user: CurrentUser, client: AdminClient) -> FollowingListResponse:
+    return follow_svc.list_followers(client, current_user.id)
+
+
 @router.post(
     "/{user_id}",
     response_model=FollowResponse,

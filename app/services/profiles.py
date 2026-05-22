@@ -89,7 +89,7 @@ def get_profile(client: Client, user_id: str) -> ProfileResponse:
 
 
 def upsert_profile(client: Client, user_id: str, update: ProfileUpdate) -> ProfileMeResponse:
-    payload = {"id": user_id, **update.model_dump(exclude_none=True)}
+    payload = {"id": user_id, **update.model_dump(exclude_none=True, mode="json")}
     response = (
         client.table(_TABLE)
         .upsert(payload, on_conflict="id")

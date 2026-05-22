@@ -135,6 +135,26 @@ def test_list_following_orders_and_counts() -> None:
     mock_table.select.assert_called_once_with("*")
 
 
+def test_list_followers_orders_and_counts() -> None:
+    rows = [_row(follower_id=TARGET), _row(follower_id="00000000-0000-4000-8000-000000000003")]
+
+    list_exec = MagicMock()
+    list_exec.execute.return_value = MagicMock(data=rows)
+
+    mock_table = MagicMock()
+    mock_table.select.return_value.eq.return_value.order.return_value = list_exec
+
+    client = MagicMock()
+    client.table.return_value = mock_table
+
+    out = follow_svc.list_followers(client, VIEWER)
+    assert isinstance(out, FollowingListResponse)
+    assert out.total == 2
+    assert len(out.items) == 2
+    assert out.items[0].follower_id == TARGET
+    mock_table.select.assert_called_once_with("*")
+
+
 @pytest.fixture
 def api_client() -> TestClient:
     return TestClient(app)
@@ -210,3 +230,33 @@ def test_api_get_follows_me_returns_payload(api_client: TestClient, monkeypatch:
     assert body["total"] == 1
     assert len(body["items"]) == 1
     assert body["items"][0]["followed_id"] == TARGET
+
+
+def test_api_get_follows_me_followers_returns_payload(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = FollowingListResponse(
+        items=[FollowResponse(**_row(follower_id=TARGET, followed_id=VIEWER))],
+        total=1,
+    )
+
+    def fake_list_followers(_client, user_id: str) -> FollowingListResponse:
+        assert user_id == VIEWER
+        return payload
+
+    monkeypatch.setattr(follow_svc, "list_followers", fake_list_followers)
+
+    app.dependency_overrides[get_admin_client] = lambda: MagicMock()
+    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=VIEWER)
+
+    try:
+        res = api_client.get("/api/v1/follows/me/followers")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 1
+    assert len(body["items"]) == 1
+    assert body["items"][0]["follower_id"] == TARGET
+    assert body["items"][0]["followed_id"] == VIEWER
