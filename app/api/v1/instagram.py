@@ -42,6 +42,12 @@ def _verify_api_key(key: Annotated[str | None, Security(_api_key_header)]) -> No
         "Requires X-Api-Key header when INSTAGRAM_API_KEY is configured."
     ),
 )
+@router.get(
+    "/post/",
+    response_model=PostMetadataResponse,
+    dependencies=[Depends(_verify_api_key)],
+    include_in_schema=False,
+)
 def get_post(
     identifier: str = Query(
         ...,
