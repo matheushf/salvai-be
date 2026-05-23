@@ -42,9 +42,9 @@ def _map_kind(typename: str, is_video: bool) -> str:
     return "unknown"
 
 
-def _get_instaloader() -> instaloader.Instaloader:
-    """Return an Instaloader instance, optionally authenticated via session file."""
-    L = instaloader.Instaloader(
+def _make_instaloader() -> instaloader.Instaloader:
+    """Return a bare Instaloader instance with scraping disabled."""
+    return instaloader.Instaloader(
         download_pictures=False,
         download_videos=False,
         download_video_thumbnails=False,
@@ -55,57 +55,75 @@ def _get_instaloader() -> instaloader.Instaloader:
         quiet=True,
     )
 
+
+def _build_sessions() -> list[tuple[str, instaloader.Instaloader]]:
+    """Return available Instaloader sessions: authenticated first (if configured),
+    then anonymous. Callers try each in order, falling back on rate-limit errors."""
+    sessions: list[tuple[str, instaloader.Instaloader]] = []
+
     settings = get_settings()
     username = settings.instagram_username
     session_file = settings.instagram_session_file
 
     if username and session_file:
+        L = _make_instaloader()
         try:
             L.load_session_from_file(username, session_file)
+            sessions.append(("authenticated", L))
         except FileNotFoundError:
             pass
 
-    return L
+    sessions.append(("anonymous", _make_instaloader()))
+    return sessions
+
+
+_RATE_LIMIT_EXCEPTIONS = (TooManyRequestsException, QueryReturnedForbiddenException)
+
+
+def _is_rate_limit(exc: InstaloaderException) -> bool:
+    return isinstance(exc, _RATE_LIMIT_EXCEPTIONS)
 
 
 def get_post_metadata(identifier: str) -> PostMetadataResponse:
     shortcode = shortcode_from_identifier(identifier)
-    L = _get_instaloader()
+    sessions = _build_sessions()
+    last_error: InstagramScraperError | None = None
 
-    try:
-        post = instaloader.Post.from_shortcode(L.context, shortcode)
-    except QueryReturnedNotFoundException:
-        raise InstagramScraperError(
-            f"Post with shortcode '{shortcode}' does not exist.", status_code=404
-        )
-    except (LoginRequiredException, PrivateProfileNotFollowedException):
-        raise InstagramScraperError(
-            "This post is from a private account or requires login.", status_code=403
-        )
-    except TooManyRequestsException:
-        raise InstagramScraperError(
-            "Instagram rate limit reached. Try again later.", status_code=429
-        )
-    except QueryReturnedForbiddenException as exc:
-        raise InstagramScraperError(
-            f"Instagram blocked the request (403). This may be rate-limiting — "
-            f"wait a few minutes and try again. Details: {exc}",
-            status_code=429,
-        )
-    except ConnectionException as exc:
-        raise InstagramScraperError(
-            f"Connection error while fetching post: {exc}", status_code=502
-        )
-    except InstaloaderException as exc:
-        raise InstagramScraperError(
-            f"Unexpected scraper error: {exc}", status_code=502
+    for label, L in sessions:
+        try:
+            post = instaloader.Post.from_shortcode(L.context, shortcode)
+        except QueryReturnedNotFoundException:
+            raise InstagramScraperError(
+                f"Post with shortcode '{shortcode}' does not exist.", status_code=404
+            )
+        except (LoginRequiredException, PrivateProfileNotFollowedException):
+            raise InstagramScraperError(
+                "This post is from a private account or requires login.", status_code=403
+            )
+        except InstaloaderException as exc:
+            if _is_rate_limit(exc):
+                last_error = InstagramScraperError(
+                    f"Instagram rate-limit hit on {label} session. "
+                    f"Details: {exc}",
+                    status_code=429,
+                )
+                continue
+            if isinstance(exc, ConnectionException):
+                raise InstagramScraperError(
+                    f"Connection error while fetching post: {exc}", status_code=502
+                )
+            raise InstagramScraperError(
+                f"Unexpected scraper error: {exc}", status_code=502
+            )
+
+        return PostMetadataResponse(
+            platform="instagram",
+            kind=_map_kind(post.typename, post.is_video),
+            description=post.caption or None,
+            thumbnailUrl=post.url or None,
+            authorHandle=post.owner_username or None,
+            publishedAt=post.date_utc.isoformat() if post.date_utc else None,
         )
 
-    return PostMetadataResponse(
-        platform="instagram",
-        kind=_map_kind(post.typename, post.is_video),
-        description=post.caption or None,
-        thumbnailUrl=post.url or None,
-        authorHandle=post.owner_username or None,
-        publishedAt=post.date_utc.isoformat() if post.date_utc else None,
-    )
+    assert last_error is not None
+    raise last_error

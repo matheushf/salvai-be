@@ -7,6 +7,8 @@ class EventCreate(BaseModel):
     title: str
     date: str
     end_date: str | None = None
+    time: str | None = None
+    end_time: str | None = None
     location: str | None = None
     image: str | None = None
     source_url: str | None = None
@@ -20,6 +22,8 @@ class EventUpdate(BaseModel):
     title: str | None = None
     date: str | None = None
     end_date: str | None = None
+    time: str | None = None
+    end_time: str | None = None
     location: str | None = None
     image: str | None = None
     source_url: str | None = None
@@ -35,6 +39,8 @@ class EventResponse(BaseModel):
     title: str
     date: str
     end_date: str | None = None
+    time: str | None = None
+    end_time: str | None = None
     location: str | None = None
     image: str | None = None
     source_url: str | None = None

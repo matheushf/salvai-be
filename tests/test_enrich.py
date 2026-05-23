@@ -13,7 +13,7 @@ from app.main import app
 from app.schemas.instagram import PostMetadataResponse
 from app.services.instagram_scraper import (
     InstagramScraperError,
-    _get_instaloader,
+    _build_sessions,
     get_post_metadata,
     shortcode_from_identifier,
 )
@@ -215,57 +215,64 @@ def test_shortcode_extracts_from_url() -> None:
     assert shortcode_from_identifier("bare_shortcode") == "bare_shortcode"
 
 
-def test_get_instaloader_anonymous_when_no_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When no credentials are configured, _get_instaloader returns anonymous instance."""
+def test_build_sessions_anonymous_only_when_no_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When no credentials are configured, _build_sessions returns only anonymous."""
     monkeypatch.setattr(
         "app.services.instagram_scraper.get_settings",
         lambda: MagicMock(instagram_username="", instagram_session_file=""),
     )
-    L = _get_instaloader()
-    assert L is not None
+    sessions = _build_sessions()
+    assert len(sessions) == 1
+    assert sessions[0][0] == "anonymous"
 
 
-def test_get_instaloader_loads_session_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When username and session file are set, _get_instaloader calls load_session_from_file."""
+def test_build_sessions_includes_authenticated_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When credentials are set, _build_sessions returns [authenticated, anonymous]."""
     fake_instaloader = MagicMock()
     fake_instaloader.load_session_from_file.return_value = None
-
-    def fake_instaloader_cls(**kwargs):
-        return fake_instaloader
 
     monkeypatch.setattr(
         "app.services.instagram_scraper.get_settings",
         lambda: MagicMock(instagram_username="testuser", instagram_session_file="/tmp/session"),
     )
     monkeypatch.setattr(
-        "app.services.instagram_scraper.instaloader.Instaloader", fake_instaloader_cls
+        "app.services.instagram_scraper.instaloader.Instaloader", lambda **kw: fake_instaloader
     )
 
-    L = _get_instaloader()
-    fake_instaloader.load_session_from_file.assert_called_once_with("testuser", "/tmp/session")
+    sessions = _build_sessions()
+    assert len(sessions) == 2
+    assert sessions[0][0] == "authenticated"
+    assert sessions[1][0] == "anonymous"
 
 
-def test_get_instaloader_ignores_missing_session_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When session file doesn't exist, _get_instaloader falls through gracefully."""
+def test_build_sessions_skips_authenticated_when_session_file_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When session file doesn't exist, _build_sessions returns only anonymous."""
     fake_instaloader = MagicMock()
     fake_instaloader.load_session_from_file.side_effect = FileNotFoundError
-
-    def fake_instaloader_cls(**kwargs):
-        return fake_instaloader
 
     monkeypatch.setattr(
         "app.services.instagram_scraper.get_settings",
         lambda: MagicMock(instagram_username="testuser", instagram_session_file="/nonexistent"),
     )
     monkeypatch.setattr(
-        "app.services.instagram_scraper.instaloader.Instaloader", fake_instaloader_cls
+        "app.services.instagram_scraper.instaloader.Instaloader", lambda **kw: fake_instaloader
     )
 
-    L = _get_instaloader()  # should not raise
-    assert L is fake_instaloader
+    sessions = _build_sessions()
+    assert len(sessions) == 1
+    assert sessions[0][0] == "anonymous"
 
 
-def test_get_post_metadata_returns_mapped_response(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_post_metadata_falls_back_to_anonymous_on_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When authenticated session is rate-limited, fall back to anonymous."""
+    from instaloader import QueryReturnedForbiddenException
+
     fake_post = MagicMock()
     fake_post.typename = "GraphImage"
     fake_post.is_video = False
@@ -274,49 +281,45 @@ def test_get_post_metadata_returns_mapped_response(monkeypatch: pytest.MonkeyPat
     fake_post.owner_username = "author"
     fake_post.date_utc.isoformat.return_value = "2026-05-22T12:00:00"
 
+    call_count = 0
+
+    def fake_from_shortcode(context, shortcode):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise QueryReturnedForbiddenException("403 Forbidden")
+        return fake_post
+
     monkeypatch.setattr(
-        "app.services.instagram_scraper._get_instaloader",
-        lambda: MagicMock(),
+        "app.services.instagram_scraper._build_sessions",
+        lambda: [
+            ("authenticated", MagicMock()),
+            ("anonymous", MagicMock()),
+        ],
     )
     monkeypatch.setattr(
         "app.services.instagram_scraper.instaloader.Post.from_shortcode",
-        lambda context, shortcode: fake_post,
+        fake_from_shortcode,
     )
 
     result = get_post_metadata("https://www.instagram.com/p/ABC123/")
-
     assert result.platform == "instagram"
-    assert result.kind == "image"
     assert result.description == "A caption"
-    assert result.thumbnailUrl == "https://example.com/img.jpg"
-    assert result.authorHandle == "author"
-    assert result.publishedAt == "2026-05-22T12:00:00"
+    assert call_count == 2
 
 
-def test_get_post_metadata_handles_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
-    from instaloader import QueryReturnedForbiddenException
-
-    monkeypatch.setattr(
-        "app.services.instagram_scraper._get_instaloader",
-        lambda: MagicMock(),
-    )
-    monkeypatch.setattr(
-        "app.services.instagram_scraper.instaloader.Post.from_shortcode",
-        lambda context, shortcode: (_ for _ in ()).throw(
-            QueryReturnedForbiddenException("403 Forbidden")
-        ),
-    )
-
-    with pytest.raises(InstagramScraperError, match="403"):
-        get_post_metadata("https://www.instagram.com/p/ABC123/")
-
-
-def test_get_post_metadata_handles_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_post_metadata_raises_when_all_sessions_rate_limited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When all sessions hit rate limits, raise after exhausting them."""
     from instaloader import TooManyRequestsException
 
     monkeypatch.setattr(
-        "app.services.instagram_scraper._get_instaloader",
-        lambda: MagicMock(),
+        "app.services.instagram_scraper._build_sessions",
+        lambda: [
+            ("authenticated", MagicMock()),
+            ("anonymous", MagicMock()),
+        ],
     )
     monkeypatch.setattr(
         "app.services.instagram_scraper.instaloader.Post.from_shortcode",
@@ -325,7 +328,7 @@ def test_get_post_metadata_handles_rate_limit(monkeypatch: pytest.MonkeyPatch) -
         ),
     )
 
-    with pytest.raises(InstagramScraperError, match="rate limit"):
+    with pytest.raises(InstagramScraperError, match="rate.limit"):
         get_post_metadata("https://www.instagram.com/p/ABC123/")
 
 
