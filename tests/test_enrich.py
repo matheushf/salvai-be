@@ -11,6 +11,12 @@ from fastapi.testclient import TestClient
 from app.core.exceptions import UpstreamError
 from app.main import app
 from app.schemas.instagram import PostMetadataResponse
+from app.services.instagram_scraper import (
+    InstagramScraperError,
+    _get_instaloader,
+    get_post_metadata,
+    shortcode_from_identifier,
+)
 from app.services.ssrf_validator import validate_url_safety
 from app.services.tiktok_service import enrich_tiktok, is_tiktok_url
 
@@ -131,90 +137,196 @@ def test_is_tiktok_url(url: str, expected: bool) -> None:
     assert is_tiktok_url(url) == expected
 
 
-# ── Webpage service ───────────────────────────────────────────────
+# ── Webpage service (scraper proxy) ───────────────────────────────
 
-_SAMPLE_HTML = """<!DOCTYPE html>
-<html>
-<head>
-  <title>Awesome Event 2026</title>
-  <meta property="og:title" content="Awesome Event 2026 — Tickets">
-  <meta property="og:description" content="Join us for the best event of the year">
-  <meta property="og:image" content="https://example.com/hero.jpg">
-  <meta property="og:site_name" content="Sympla">
-  <meta name="description" content="Fallback description">
-  <script type="application/ld+json">
-  {
-    "@type": "Event",
-    "name": "Awesome Event 2026",
-    "startDate": "2026-06-15T20:00:00",
-    "endDate": "2026-06-16T02:00:00",
-    "location": {"name": "Audio Club, Sao Paulo"}
-  }
-  </script>
-</head>
-<body>
-  <article>
-    <h1>Awesome Event 2026</h1>
-    <p>The biggest electronic music festival. Join us at Audio Club on June 15th.</p>
-    <nav>Home | About | Contact</nav>
-  </article>
-</body>
-</html>"""
+_SAMPLE_METADATA = PostMetadataResponse(
+    platform="unknown",
+    kind="post",
+    description="Awesome Event 2026\n\nJoin us for the best event of the year",
+    thumbnailUrl="https://example.com/hero.jpg",
+    authorHandle="Sympla",
+    publishedAt=None,
+)
 
 
-def test_webpage_enrich_extracts_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
-    resp = MagicMock(spec=httpx.Response)
-    resp.text = _SAMPLE_HTML
-    resp.raise_for_status.return_value = None
-
-    def fake_get(*args, **kwargs):
-        return resp
-
-    monkeypatch.setattr(httpx, "get", fake_get)
+def test_webpage_enrich_delegates_to_scraper(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.services.webpage_service.scraper_is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "app.services.webpage_service.fetch_metadata_via_scraper",
+        lambda url: _SAMPLE_METADATA,
+    )
 
     from app.services.webpage_service import enrich_webpage
 
-    result = enrich_webpage("https://www.sympla.com.br/event")
+    result = enrich_webpage("https://example.com/event")
 
     assert result.platform == "unknown"
     assert result.kind == "post"
     assert result.thumbnailUrl == "https://example.com/hero.jpg"
     assert result.authorHandle == "Sympla"
-    assert result.publishedAt is None
     assert result.description is not None
     assert "Awesome Event 2026" in result.description
-    assert "startDate: 2026-06-15T20:00:00" in result.description
-    assert "Audio Club" in result.description
 
 
-def test_webpage_enrich_handles_minimal_html(monkeypatch: pytest.MonkeyPatch) -> None:
-    resp = MagicMock(spec=httpx.Response)
-    resp.text = "<html><head><title>Minimal</title></head><body><p>Hello.</p></body></html>"
-    resp.raise_for_status.return_value = None
-
-    def fake_get(*args, **kwargs):
-        return resp
-
-    monkeypatch.setattr(httpx, "get", fake_get)
+def test_webpage_enrich_raises_when_scraper_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.webpage_service.scraper_is_configured",
+        lambda: False,
+    )
 
     from app.services.webpage_service import enrich_webpage
 
-    result = enrich_webpage("https://example.com")
-    assert result.platform == "unknown"
-    assert result.description is not None
-    assert "Minimal" in result.description
-
-
-def test_webpage_enrich_raises_upstream_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_get(*args, **kwargs):
-        raise httpx.TimeoutException("timed out")
-
-    monkeypatch.setattr(httpx, "get", fake_get)
-
-    from app.services.webpage_service import enrich_webpage
-
-    with pytest.raises(UpstreamError, match="timed out"):
+    with pytest.raises(UpstreamError, match="not configured"):
         enrich_webpage("https://example.com")
+
+
+def test_webpage_enrich_raises_upstream_when_scraper_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.webpage_service.scraper_is_configured",
+        lambda: True,
+    )
+
+    def raise_scraper_error(url: str) -> PostMetadataResponse:
+        raise UpstreamError("Scraper returned 502")
+
+    monkeypatch.setattr(
+        "app.services.webpage_service.fetch_metadata_via_scraper",
+        raise_scraper_error,
+    )
+
+    from app.services.webpage_service import enrich_webpage
+
+    with pytest.raises(UpstreamError, match="502"):
+        enrich_webpage("https://example.com/event")
+
+
+# ── Instagram scraper ──────────────────────────────────────────────
+
+def test_shortcode_extracts_from_url() -> None:
+    assert shortcode_from_identifier("https://www.instagram.com/p/ABC123/") == "ABC123"
+    assert shortcode_from_identifier("https://www.instagram.com/reel/XYZ789/") == "XYZ789"
+    assert shortcode_from_identifier("bare_shortcode") == "bare_shortcode"
+
+
+def test_get_instaloader_anonymous_when_no_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When no credentials are configured, _get_instaloader returns anonymous instance."""
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.get_settings",
+        lambda: MagicMock(instagram_username="", instagram_session_file=""),
+    )
+    L = _get_instaloader()
+    assert L is not None
+
+
+def test_get_instaloader_loads_session_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When username and session file are set, _get_instaloader calls load_session_from_file."""
+    fake_instaloader = MagicMock()
+    fake_instaloader.load_session_from_file.return_value = None
+
+    def fake_instaloader_cls(**kwargs):
+        return fake_instaloader
+
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.get_settings",
+        lambda: MagicMock(instagram_username="testuser", instagram_session_file="/tmp/session"),
+    )
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.instaloader.Instaloader", fake_instaloader_cls
+    )
+
+    L = _get_instaloader()
+    fake_instaloader.load_session_from_file.assert_called_once_with("testuser", "/tmp/session")
+
+
+def test_get_instaloader_ignores_missing_session_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When session file doesn't exist, _get_instaloader falls through gracefully."""
+    fake_instaloader = MagicMock()
+    fake_instaloader.load_session_from_file.side_effect = FileNotFoundError
+
+    def fake_instaloader_cls(**kwargs):
+        return fake_instaloader
+
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.get_settings",
+        lambda: MagicMock(instagram_username="testuser", instagram_session_file="/nonexistent"),
+    )
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.instaloader.Instaloader", fake_instaloader_cls
+    )
+
+    L = _get_instaloader()  # should not raise
+    assert L is fake_instaloader
+
+
+def test_get_post_metadata_returns_mapped_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_post = MagicMock()
+    fake_post.typename = "GraphImage"
+    fake_post.is_video = False
+    fake_post.caption = "A caption"
+    fake_post.url = "https://example.com/img.jpg"
+    fake_post.owner_username = "author"
+    fake_post.date_utc.isoformat.return_value = "2026-05-22T12:00:00"
+
+    monkeypatch.setattr(
+        "app.services.instagram_scraper._get_instaloader",
+        lambda: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.instaloader.Post.from_shortcode",
+        lambda context, shortcode: fake_post,
+    )
+
+    result = get_post_metadata("https://www.instagram.com/p/ABC123/")
+
+    assert result.platform == "instagram"
+    assert result.kind == "image"
+    assert result.description == "A caption"
+    assert result.thumbnailUrl == "https://example.com/img.jpg"
+    assert result.authorHandle == "author"
+    assert result.publishedAt == "2026-05-22T12:00:00"
+
+
+def test_get_post_metadata_handles_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    from instaloader import QueryReturnedForbiddenException
+
+    monkeypatch.setattr(
+        "app.services.instagram_scraper._get_instaloader",
+        lambda: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.instaloader.Post.from_shortcode",
+        lambda context, shortcode: (_ for _ in ()).throw(
+            QueryReturnedForbiddenException("403 Forbidden")
+        ),
+    )
+
+    with pytest.raises(InstagramScraperError, match="403"):
+        get_post_metadata("https://www.instagram.com/p/ABC123/")
+
+
+def test_get_post_metadata_handles_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    from instaloader import TooManyRequestsException
+
+    monkeypatch.setattr(
+        "app.services.instagram_scraper._get_instaloader",
+        lambda: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.instaloader.Post.from_shortcode",
+        lambda context, shortcode: (_ for _ in ()).throw(
+            TooManyRequestsException("429 Too Many Requests")
+        ),
+    )
+
+    with pytest.raises(InstagramScraperError, match="rate limit"):
+        get_post_metadata("https://www.instagram.com/p/ABC123/")
 
 
 # ── API integration tests ─────────────────────────────────────────

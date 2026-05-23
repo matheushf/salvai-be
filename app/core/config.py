@@ -17,6 +17,17 @@ class Settings(BaseSettings):
     # Leave empty (default) to keep the endpoint open (useful in dev).
     instagram_api_key: str = ""
 
+    # Optional Instagram credentials for the scraper. When set, the scraper
+    # loads a saved session file instead of hitting the GraphQL API anonymously,
+    # which raises the rate-limit ceiling significantly.
+    # Create the session file with: instaloader -l USERNAME
+    instagram_username: str = ""
+    instagram_session_file: str = ""
+
+    # Optional salvai-scraper service for generic web page enrichment.
+    scraper_service_url: str = ""
+    scraper_api_key: str = ""
+
     @property
     def allowed_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]

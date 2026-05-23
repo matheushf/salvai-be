@@ -6,10 +6,12 @@ from instaloader import (
     InstaloaderException,
     LoginRequiredException,
     PrivateProfileNotFollowedException,
+    QueryReturnedForbiddenException,
     QueryReturnedNotFoundException,
     TooManyRequestsException,
 )
 
+from app.core.config import get_settings
 from app.schemas.instagram import PostMetadataResponse
 
 _SHORTCODE_RE = re.compile(r"instagram\.com/(?:p|reel)/([A-Za-z0-9_-]+)")
@@ -40,9 +42,8 @@ def _map_kind(typename: str, is_video: bool) -> str:
     return "unknown"
 
 
-def get_post_metadata(identifier: str) -> PostMetadataResponse:
-    shortcode = shortcode_from_identifier(identifier)
-
+def _get_instaloader() -> instaloader.Instaloader:
+    """Return an Instaloader instance, optionally authenticated via session file."""
     L = instaloader.Instaloader(
         download_pictures=False,
         download_videos=False,
@@ -53,6 +54,23 @@ def get_post_metadata(identifier: str) -> PostMetadataResponse:
         compress_json=False,
         quiet=True,
     )
+
+    settings = get_settings()
+    username = settings.instagram_username
+    session_file = settings.instagram_session_file
+
+    if username and session_file:
+        try:
+            L.load_session_from_file(username, session_file)
+        except FileNotFoundError:
+            pass
+
+    return L
+
+
+def get_post_metadata(identifier: str) -> PostMetadataResponse:
+    shortcode = shortcode_from_identifier(identifier)
+    L = _get_instaloader()
 
     try:
         post = instaloader.Post.from_shortcode(L.context, shortcode)
@@ -67,6 +85,12 @@ def get_post_metadata(identifier: str) -> PostMetadataResponse:
     except TooManyRequestsException:
         raise InstagramScraperError(
             "Instagram rate limit reached. Try again later.", status_code=429
+        )
+    except QueryReturnedForbiddenException as exc:
+        raise InstagramScraperError(
+            f"Instagram blocked the request (403). This may be rate-limiting — "
+            f"wait a few minutes and try again. Details: {exc}",
+            status_code=429,
         )
     except ConnectionException as exc:
         raise InstagramScraperError(
