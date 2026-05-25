@@ -1,10 +1,14 @@
 """HTTP client for the private salvai-scraper service."""
 
+import logging
+
 import httpx
 
 from app.core.config import get_settings
 from app.core.exceptions import UpstreamError
 from app.schemas.instagram import PostMetadataResponse
+
+logger = logging.getLogger(__name__)
 
 _SCRAPER_TIMEOUT_S = 15.0
 
@@ -20,6 +24,11 @@ def fetch_metadata_via_scraper(url: str) -> PostMetadataResponse:
         raise UpstreamError("Scraper service is not configured")
 
     endpoint = f"{settings.scraper_service_url.rstrip('/')}/enrich"
+    logger.info(
+        "Calling salvai-scraper enrich endpoint: %s (url=%s)",
+        endpoint,
+        url,
+    )
     try:
         response = httpx.post(
             endpoint,

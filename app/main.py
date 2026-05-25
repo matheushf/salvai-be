@@ -15,7 +15,10 @@ from app.core.exceptions import (
     NotFoundError,
     UpstreamError,
 )
+from app.logging_config import configure_logging
 from app.schemas.error import ErrorResponse
+
+configure_logging()
 
 
 @asynccontextmanager
