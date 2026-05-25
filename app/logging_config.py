@@ -18,6 +18,11 @@ def get_logging_config() -> dict:
         '%(asctime)s %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s'
     )
     config["formatters"]["access"]["datefmt"] = _DATE_FMT
+    config["loggers"]["app"] = {
+        "handlers": ["default"],
+        "level": "INFO",
+        "propagate": False,
+    }
     return config
 
 
