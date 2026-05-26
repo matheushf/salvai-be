@@ -22,6 +22,9 @@ def _profile_row(**overrides: object) -> dict:
         "display_name": "Test User",
         "avatar_url": None,
         "bio": None,
+        "country": "BR",
+        "state": "SP",
+        "city": "Sao Paulo",
         "interests": [],
         "email": "test@example.com",
         "birth_date": "1990-05-15",
@@ -60,3 +63,34 @@ def test_upsert_profile_serializes_birth_date_as_iso_string() -> None:
     assert payload["birth_date"] == "1990-05-15"
     assert isinstance(payload["birth_date"], str)
     assert upsert_call.kwargs == {"on_conflict": "id"}
+
+
+def test_upsert_profile_includes_location_fields() -> None:
+    client = _mock_client_for_upsert()
+    update = ProfileUpdate(
+        country="br",
+        state=" SP ",
+        city="Sao Paulo",
+    )
+
+    profile_svc.upsert_profile(client, USER_ID, update)
+
+    payload = client.table.return_value.upsert.call_args.args[0]
+    assert payload["country"] == "BR"
+    assert payload["state"] == "SP"
+    assert payload["city"] == "Sao Paulo"
+
+
+def test_profile_update_rejects_invalid_country() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="country must be a valid ISO"):
+        ProfileUpdate(country="XX")
+
+
+def test_to_public_includes_location_fields() -> None:
+    row = _profile_row(country="US", state="CA", city="San Francisco")
+    profile = profile_svc._to_public(row)
+    assert profile.country == "US"
+    assert profile.state == "CA"
+    assert profile.city == "San Francisco"

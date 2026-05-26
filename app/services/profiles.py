@@ -17,6 +17,9 @@ _PUBLIC_FIELDS = (
     "display_name",
     "avatar_url",
     "bio",
+    "country",
+    "state",
+    "city",
     "interests",
     "updated_at",
 )
@@ -89,7 +92,7 @@ def get_profile(client: Client, user_id: str) -> ProfileResponse:
 
 
 def upsert_profile(client: Client, user_id: str, update: ProfileUpdate) -> ProfileMeResponse:
-    payload = {"id": user_id, **update.model_dump(exclude_none=True, mode="json")}
+    payload = {"id": user_id, **update.model_dump(exclude_unset=True, mode="json")}
     response = (
         client.table(_TABLE)
         .upsert(payload, on_conflict="id")

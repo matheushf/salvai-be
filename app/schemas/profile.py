@@ -2,6 +2,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.constants.countries import normalize_country, normalize_location_text
 from app.constants.interests import normalize_interests
 
 
@@ -11,6 +12,9 @@ class ProfileResponse(BaseModel):
     display_name: str | None = None
     avatar_url: str | None = None
     bio: str | None = None
+    country: str | None = None
+    state: str | None = None
+    city: str | None = None
     interests: list[str] = Field(default_factory=list)
     updated_at: datetime | None = None
 
@@ -25,8 +29,21 @@ class ProfileUpdate(BaseModel):
     display_name: str | None = None
     avatar_url: str | None = None
     bio: str | None = None
+    country: str | None = None
+    state: str | None = None
+    city: str | None = None
     interests: list[str] | None = None
     birth_date: date | None = None
+
+    @field_validator("country")
+    @classmethod
+    def validate_country(cls, value: str | None) -> str | None:
+        return normalize_country(value)
+
+    @field_validator("state", "city")
+    @classmethod
+    def validate_location_text(cls, value: str | None) -> str | None:
+        return normalize_location_text(value)
 
     @field_validator("interests")
     @classmethod
