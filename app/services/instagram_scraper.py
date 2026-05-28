@@ -1,5 +1,6 @@
 import re
 
+import app.core.instagram_patch  # noqa: F401 — monkey-patch for Instagram API changes
 import instaloader
 from instaloader import (
     ConnectionException,
