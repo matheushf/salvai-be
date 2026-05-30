@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     scraper_service_url: str = ""
     scraper_api_key: str = ""
 
+    # Optional Sentry error monitoring. Leave SENTRY_DSN empty to disable (default for local dev).
+    sentry_dsn: str = ""
+    sentry_environment: str = "development"
+    sentry_traces_sample_rate: float = 0.0
+    sentry_release: str = ""
+
     @property
     def allowed_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]

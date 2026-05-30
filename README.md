@@ -22,9 +22,32 @@ Environment variables (see `.env.example` for descriptions):
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes |
 | `SUPABASE_JWT_SECRET` | Yes |
 | `CORS_ALLOWED_ORIGINS` | Yes |
-| `PORT` | Auto (Railway injects this) |
+| `SENTRY_DSN` | No (recommended in production) |
+| `SENTRY_ENVIRONMENT` | No (defaults to `development`) |
+| `PORT` | No (defaults to 8000 in Docker) |
 
 All three Supabase values are in your **Supabase Dashboard → Project Settings → API**.
+
+## Error monitoring (Sentry)
+
+Optional error reporting via [Sentry](https://sentry.io). Disabled locally when `SENTRY_DSN` is unset.
+
+### Setup
+
+1. Create a Sentry account and a **Python / FastAPI** project.
+2. Copy the project **DSN** from **Settings → Client Keys (DSN)**.
+3. In Sentry, add an alert rule (e.g. email on **new issue** or error spike).
+4. Set variables on the production server (see `.env.example`):
+
+| Variable | Example | Notes |
+|----------|---------|-------|
+| `SENTRY_DSN` | `https://…@…ingest.sentry.io/…` | Required to enable reporting |
+| `SENTRY_ENVIRONMENT` | `production` | Separates prod from staging in Sentry |
+| `SENTRY_RELEASE` | git commit SHA | Optional; helps track regressions by deploy |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0.0` | Keep at `0` on the free tier (errors only) |
+
+5. Redeploy/restart the API container after updating `.env`.
+6. In the Sentry project, use **Send a test event** or trigger a real 502 (upstream failure) to confirm events arrive. Expected 404/403 responses should **not** appear in Sentry.
 
 ## Running locally
 
@@ -60,13 +83,60 @@ docker run -p 8000:8000 \
   salvai-be
 ```
 
-## Deploying on Railway
+## Deploying on Hetzner VPS (Docker)
 
-1. Create a new Railway service pointing to this repository.
-2. Set **Root Directory** to `salvai-be` in the Railway service settings.
-3. Railway will automatically detect and use the `Dockerfile`.
-4. Set environment variables in the Railway dashboard (see table above).
-5. Set the healthcheck path to `/health`.
+Production runs on a self-hosted Hetzner VPS at `https://api.apps.salvai.cloud`. TLS is handled by a reverse proxy (Caddy or nginx) that forwards to the container on `localhost:8000`.
+
+Build from the `salvai-be/` directory:
+
+```bash
+docker build -t salvai-be .
+```
+
+Run with an env file and restart policy:
+
+```bash
+docker run -d --name salvai-be \
+  -p 8000:8000 \
+  --env-file .env \
+  --restart unless-stopped \
+  salvai-be
+```
+
+On the VPS, set all required environment variables (see table above). Include your production frontend origin in `CORS_ALLOWED_ORIGINS`. Set `SCRAPER_SERVICE_URL` to the production scraper host (see `.env.example`).
+
+Optional: set `WEB_CONCURRENCY` in `.env` to tune uvicorn worker count (default `2` in the Docker image).
+
+### Crash resilience
+
+Two layers keep the API available on the VPS:
+
+1. **Inside the container** — production runs uvicorn with multiple workers (`WEB_CONCURRENCY`, default `2`). If one worker crashes, the parent respawns it while other workers keep serving traffic (including `/health`).
+2. **Docker restart** — always use `--restart unless-stopped` when creating the container. If the whole process exits (OOM, fatal error), Docker starts a fresh container automatically.
+
+HTTP 500 responses from application errors do **not** stop the API; only a process or container exit causes downtime.
+
+The Docker image includes a `HEALTHCHECK` against `/health` so `docker ps` shows `(healthy)` / `(unhealthy)` when you SSH in. It does not replace `--restart unless-stopped` for crash recovery.
+
+Health check path: `GET /health`
+
+Verify after deploy:
+
+```bash
+curl -sS https://api.apps.salvai.cloud/health
+```
+
+Redeploy after code changes:
+
+```bash
+docker build -t salvai-be .
+docker stop salvai-be && docker rm salvai-be
+docker run -d --name salvai-be \
+  -p 8000:8000 \
+  --env-file .env \
+  --restart unless-stopped \
+  salvai-be
+```
 
 ## Authentication
 
@@ -145,6 +215,7 @@ The v1 feed is computed on read: for each request it fetches the follow list and
 ```
 app/
 ├── main.py
+├── sentry_config.py     # optional Sentry init + noise filters
 ├── core/
 │   ├── config.py          # pydantic-settings: SUPABASE_*, CORS
 │   ├── supabase.py        # admin client (service_role, cached)

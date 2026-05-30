@@ -3,6 +3,7 @@ import re
 from supabase import Client
 
 from app.core.exceptions import NotFoundError, UpstreamError
+from app.core.supabase import execute_supabase
 from app.schemas.profile import ProfileMeResponse, ProfileResponse, ProfileUpdate
 
 _TABLE = "profiles"
@@ -57,10 +58,9 @@ def _ensure_profile_row(
     if normalized_email is not None:
         payload["email"] = normalized_email
 
-    response = (
-        client.table(_TABLE)
-        .upsert(payload, on_conflict="id")
-        .execute()
+    response = execute_supabase(
+        client,
+        lambda c: c.table(_TABLE).upsert(payload, on_conflict="id").execute(),
     )
     if not response.data:
         raise UpstreamError("Failed to ensure profile")
@@ -77,7 +77,10 @@ def get_my_profile(
     user_id: str,
     email: str | None,
 ) -> ProfileMeResponse:
-    response = client.table(_TABLE).select("*").eq("id", user_id).maybe_single().execute()
+    response = execute_supabase(
+        client,
+        lambda c: c.table(_TABLE).select("*").eq("id", user_id).maybe_single().execute(),
+    )
     if response is None or response.data is None:
         row = _ensure_profile_row(client, user_id, email)
         return _to_me(row)
@@ -85,7 +88,10 @@ def get_my_profile(
 
 
 def get_profile(client: Client, user_id: str) -> ProfileResponse:
-    response = client.table(_TABLE).select("*").eq("id", user_id).maybe_single().execute()
+    response = execute_supabase(
+        client,
+        lambda c: c.table(_TABLE).select("*").eq("id", user_id).maybe_single().execute(),
+    )
     if response is None or response.data is None:
         raise NotFoundError("Profile", user_id)
     return _to_public(response.data)
@@ -93,10 +99,9 @@ def get_profile(client: Client, user_id: str) -> ProfileResponse:
 
 def upsert_profile(client: Client, user_id: str, update: ProfileUpdate) -> ProfileMeResponse:
     payload = {"id": user_id, **update.model_dump(exclude_unset=True, mode="json")}
-    response = (
-        client.table(_TABLE)
-        .upsert(payload, on_conflict="id")
-        .execute()
+    response = execute_supabase(
+        client,
+        lambda c: c.table(_TABLE).upsert(payload, on_conflict="id").execute(),
     )
     if not response.data:
         raise UpstreamError("Failed to upsert profile")
@@ -111,17 +116,27 @@ def search_profiles(
 ) -> list[ProfileResponse]:
     limit = min(max(limit, 1), _MAX_SEARCH_RESULTS)
     term = _sanitize_search_term(q or "")
-    base = client.table(_TABLE).select("*").neq("id", current_user_id)
-
     if term:
         pattern = f"%{term}%"
-        response = (
-            base.or_(f"username.ilike.{pattern},display_name.ilike.{pattern}")
+        response = execute_supabase(
+            client,
+            lambda c: c.table(_TABLE)
+            .select("*")
+            .neq("id", current_user_id)
+            .or_(f"username.ilike.{pattern},display_name.ilike.{pattern}")
             .limit(limit)
-            .execute()
+            .execute(),
         )
     else:
-        response = base.order("username", desc=False).limit(limit).execute()
+        response = execute_supabase(
+            client,
+            lambda c: c.table(_TABLE)
+            .select("*")
+            .neq("id", current_user_id)
+            .order("username", desc=False)
+            .limit(limit)
+            .execute(),
+        )
 
     rows = response.data or []
     return [_to_public(row) for row in rows]

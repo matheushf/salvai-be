@@ -1,6 +1,8 @@
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+import sentry_sdk
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -17,8 +19,13 @@ from app.core.exceptions import (
 )
 from app.logging_config import configure_logging
 from app.schemas.error import ErrorResponse
+from app.sentry_config import init_sentry
 
 configure_logging()
+settings = get_settings()
+init_sentry(settings)
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -35,8 +42,6 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
-
-settings = get_settings()
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,6 +84,7 @@ async def validation_handler(_: Request, exc: DomainValidationError) -> JSONResp
 
 @app.exception_handler(UpstreamError)
 async def upstream_handler(_: Request, exc: UpstreamError) -> JSONResponse:
+    sentry_sdk.capture_exception(exc)
     return _error(
         "UPSTREAM_ERROR",
         "An upstream service returned an unexpected error",
@@ -90,6 +96,16 @@ async def upstream_handler(_: Request, exc: UpstreamError) -> JSONResponse:
 @app.exception_handler(AppError)
 async def generic_app_error_handler(_: Request, exc: AppError) -> JSONResponse:
     return _error("INTERNAL_ERROR", str(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONResponse:
+    logger.error("Unhandled exception", exc_info=exc)
+    return _error(
+        "INTERNAL_ERROR",
+        "An unexpected error occurred",
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
 
 
 # ── Health ──────────────────────────────────────────────────────────────────

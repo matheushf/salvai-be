@@ -3,6 +3,7 @@ from datetime import date, datetime, timezone
 from supabase import Client
 
 from app.core.exceptions import DomainValidationError, ForbiddenError, NotFoundError, UpstreamError
+from app.core.supabase import execute_supabase
 from app.schemas.event import (
     EventCreate,
     EventListPage,
@@ -33,20 +34,24 @@ def _parse_dmy_date(value: str) -> date | None:
 
 
 def _viewer_follows_author(client: Client, viewer_id: str, author_id: str) -> bool:
-    follow_resp = (
-        client.table(_FOLLOWS_TABLE)
+    follow_resp = execute_supabase(
+        client,
+        lambda c: c.table(_FOLLOWS_TABLE)
         .select("follower_id")
         .eq("follower_id", viewer_id)
         .eq("followed_id", author_id)
         .maybe_single()
-        .execute()
+        .execute(),
     )
     return follow_resp is not None
 
 
 def create_event(client: Client, author_id: str, data: EventCreate) -> EventResponse:
     payload = {"author_id": author_id, **data.model_dump(exclude_none=True)}
-    response = client.table(_TABLE).insert(payload).execute()
+    response = execute_supabase(
+        client,
+        lambda c: c.table(_TABLE).insert(payload).execute(),
+    )
     if not response.data:
         raise UpstreamError("Failed to create event")
     return EventResponse(**response.data[0])
@@ -60,17 +65,10 @@ def list_my_events(
 ) -> EventListPage:
     limit = min(limit, _MAX_LIMIT)
 
-    q = (
-        client.table(_TABLE)
-        .select("*")
-        .eq("author_id", user_id)
-        .order("created_at", desc=True)
-        .limit(limit + 1)
+    resp = execute_supabase(
+        client,
+        lambda c: _my_events_query(c, user_id, cursor, limit).execute(),
     )
-    if cursor:
-        q = q.lt("created_at", cursor)
-
-    resp = q.execute()
     rows = resp.data or []
 
     has_more = len(rows) > limit
@@ -84,6 +82,19 @@ def list_my_events(
         next_cursor = last_created_at.isoformat() if isinstance(last_created_at, datetime) else str(last_created_at)
 
     return EventListPage(items=items, next_cursor=next_cursor, has_more=has_more)
+
+
+def _my_events_query(client: Client, user_id: str, cursor: str | None, limit: int):
+    query = (
+        client.table(_TABLE)
+        .select("*")
+        .eq("author_id", user_id)
+        .order("created_at", desc=True)
+        .limit(limit + 1)
+    )
+    if cursor:
+        query = query.lt("created_at", cursor)
+    return query
 
 
 def list_profile_upcoming_events(
@@ -106,22 +117,25 @@ def list_profile_upcoming_events(
         if not _viewer_follows_author(client, viewer_id, profile_user_id):
             return ProfileUpcomingEventsResponse(items=[])
 
-        q = (
-            client.table(_TABLE)
+        resp = execute_supabase(
+            client,
+            lambda c: c.table(_TABLE)
             .select("*")
             .eq("author_id", profile_user_id)
             .eq("visible_in_feed", True)
             .limit(_PROFILE_UPCOMING_FETCH_CAP)
+            .execute(),
         )
     else:
-        q = (
-            client.table(_TABLE)
+        resp = execute_supabase(
+            client,
+            lambda c: c.table(_TABLE)
             .select("*")
             .eq("author_id", profile_user_id)
             .limit(_PROFILE_UPCOMING_FETCH_CAP)
+            .execute(),
         )
 
-    resp = q.execute()
     rows = resp.data or []
 
     today = datetime.now(timezone.utc).date()
@@ -137,7 +151,6 @@ def list_profile_upcoming_events(
         parsed.append((EventResponse(**row), event_day))
 
     parsed.sort(key=lambda pair: (pair[1], pair[0].created_at))
-    # Authors need all upcoming candidates (within fetch cap) so the client can merge with local saves then cap at 2.
     if profile_user_id == viewer_id:
         items = [pair[0] for pair in parsed]
     else:
@@ -152,7 +165,10 @@ def get_event(client: Client, event_id: str, requester_id: str) -> EventResponse
 
     Raises NotFoundError if it does not exist, ForbiddenError if not visible.
     """
-    event_resp = client.table(_TABLE).select("*").eq("id", event_id).maybe_single().execute()
+    event_resp = execute_supabase(
+        client,
+        lambda c: c.table(_TABLE).select("*").eq("id", event_id).maybe_single().execute(),
+    )
     if event_resp is None:
         raise NotFoundError("Event", event_id)
 
@@ -165,13 +181,14 @@ def get_event(client: Client, event_id: str, requester_id: str) -> EventResponse
     if not event_data.get("visible_in_feed"):
         raise ForbiddenError("This event is private")
 
-    follow_resp = (
-        client.table(_FOLLOWS_TABLE)
+    follow_resp = execute_supabase(
+        client,
+        lambda c: c.table(_FOLLOWS_TABLE)
         .select("follower_id")
         .eq("follower_id", requester_id)
         .eq("followed_id", author_id)
         .maybe_single()
-        .execute()
+        .execute(),
     )
     if follow_resp is None:
         raise ForbiddenError("You can only view events from users you follow")
@@ -184,25 +201,23 @@ def update_event(client: Client, event_id: str, user_id: str, body: EventUpdate)
     if not patch:
         raise DomainValidationError("No fields to update")
 
-    existing = (
-        client.table(_TABLE)
-        .select("author_id")
-        .eq("id", event_id)
-        .maybe_single()
-        .execute()
+    existing = execute_supabase(
+        client,
+        lambda c: c.table(_TABLE).select("author_id").eq("id", event_id).maybe_single().execute(),
     )
     if existing is None:
         raise NotFoundError("Event", event_id)
     if existing.data["author_id"] != user_id:
         raise ForbiddenError("You can only update your own events")
 
-    response = (
-        client.table(_TABLE)
+    response = execute_supabase(
+        client,
+        lambda c: c.table(_TABLE)
         .update(patch)
         .eq("id", event_id)
         .eq("author_id", user_id)
         .select("*")
-        .execute()
+        .execute(),
     )
     if not response.data:
         raise UpstreamError("Failed to update event")
@@ -210,16 +225,16 @@ def update_event(client: Client, event_id: str, user_id: str, body: EventUpdate)
 
 
 def delete_event(client: Client, event_id: str, user_id: str) -> None:
-    existing = (
-        client.table(_TABLE)
-        .select("author_id")
-        .eq("id", event_id)
-        .maybe_single()
-        .execute()
+    existing = execute_supabase(
+        client,
+        lambda c: c.table(_TABLE).select("author_id").eq("id", event_id).maybe_single().execute(),
     )
     if existing is None:
         raise NotFoundError("Event", event_id)
     if existing.data["author_id"] != user_id:
         raise ForbiddenError("You can only delete your own events")
 
-    client.table(_TABLE).delete().eq("id", event_id).execute()
+    execute_supabase(
+        client,
+        lambda c: c.table(_TABLE).delete().eq("id", event_id).execute(),
+    )

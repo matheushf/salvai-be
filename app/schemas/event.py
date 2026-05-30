@@ -1,6 +1,9 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
+
+EventNotificationReminder = Literal["2d", "1d", "6h", "1h"]
 
 
 class EventCreate(BaseModel):
@@ -16,6 +19,7 @@ class EventCreate(BaseModel):
     description: str | None = None
     link: str | None = None
     visible_in_feed: bool = False
+    notification_reminder: EventNotificationReminder | None = None
 
 
 class EventUpdate(BaseModel):
@@ -31,6 +35,7 @@ class EventUpdate(BaseModel):
     description: str | None = None
     link: str | None = None
     visible_in_feed: bool | None = None
+    notification_reminder: EventNotificationReminder | None = None
 
 
 class EventResponse(BaseModel):
@@ -48,6 +53,7 @@ class EventResponse(BaseModel):
     description: str | None = None
     link: str | None = None
     visible_in_feed: bool
+    notification_reminder: EventNotificationReminder | None = None
     created_at: datetime
 
 
