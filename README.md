@@ -116,7 +116,7 @@ Two layers keep the API available on the VPS:
 
 HTTP 500 responses from application errors do **not** stop the API; only a process or container exit causes downtime.
 
-The Docker image includes a `HEALTHCHECK` against `/health` so `docker ps` shows `(healthy)` / `(unhealthy)` when you SSH in. It does not replace `--restart unless-stopped` for crash recovery.
+The Docker image includes a `HEALTHCHECK` against `/health` so `docker ps` shows `(healthy)` / `(unhealthy)` when you SSH in. It reads the same `PORT` env var as uvicorn (Coolify and similar platforms may inject `PORT`, e.g. `3000`). It does not replace `--restart unless-stopped` for crash recovery.
 
 Health check path: `GET /health`
 
