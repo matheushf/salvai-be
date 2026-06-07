@@ -33,6 +33,45 @@ def _parse_dmy_date(value: str) -> date | None:
         return None
 
 
+def _parse_iso_date(value: str) -> date | None:
+    """Parse yyyy-mm-dd or ISO-8601 prefix to a calendar date."""
+    stripped = value.strip()
+    match = stripped[:10] if len(stripped) >= 10 else stripped
+    if len(match) != 10 or match[4] != "-" or match[7] != "-":
+        return None
+    try:
+        yyyy, mm, dd = int(match[0:4]), int(match[5:7]), int(match[8:10])
+        return date(yyyy, mm, dd)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_event_date(value: str) -> date | None:
+    """Parse event date from dd/mm/yyyy (app format) or ISO yyyy-mm-dd."""
+    parsed = _parse_dmy_date(value)
+    if parsed is not None:
+        return parsed
+    return _parse_iso_date(value)
+
+
+def _upcoming_sort_day(row: dict, today: date) -> date | None:
+    """
+    Return the sort key date when the event is still upcoming (UTC calendar day).
+
+    Matches FE rules: start date on/after today, or multi-day range with end_date on/after today.
+    """
+    raw_start = row.get("date")
+    raw_end = row.get("end_date")
+    start = _parse_event_date(raw_start) if isinstance(raw_start, str) else None
+    end = _parse_event_date(raw_end) if isinstance(raw_end, str) else None
+
+    if end is not None and end >= today:
+        return start if start is not None else end
+    if start is not None and start >= today:
+        return start
+    return None
+
+
 def _viewer_follows_author(client: Client, viewer_id: str, author_id: str) -> bool:
     follow_resp = execute_supabase(
         client,
@@ -43,7 +82,13 @@ def _viewer_follows_author(client: Client, viewer_id: str, author_id: str) -> bo
         .maybe_single()
         .execute(),
     )
-    return follow_resp is not None
+    if follow_resp is None:
+        return False
+    return bool(getattr(follow_resp, "data", None))
+
+
+def _utc_today() -> date:
+    return datetime.now(timezone.utc).date()
 
 
 def create_event(client: Client, author_id: str, data: EventCreate) -> EventResponse:
@@ -138,15 +183,12 @@ def list_profile_upcoming_events(
 
     rows = resp.data or []
 
-    today = datetime.now(timezone.utc).date()
+    today = _utc_today()
 
     parsed: list[tuple[EventResponse, date]] = []
     for row in rows:
-        raw_date = row.get("date")
-        if not raw_date or not isinstance(raw_date, str):
-            continue
-        event_day = _parse_dmy_date(raw_date)
-        if event_day is None or event_day < today:
+        event_day = _upcoming_sort_day(row, today)
+        if event_day is None:
             continue
         parsed.append((EventResponse(**row), event_day))
 

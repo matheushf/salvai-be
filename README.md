@@ -24,6 +24,8 @@ Environment variables (see `.env.example` for descriptions):
 | `CORS_ALLOWED_ORIGINS` | Yes |
 | `SENTRY_DSN` | No (recommended in production) |
 | `SENTRY_ENVIRONMENT` | No (defaults to `development`) |
+| `ENRICH_CACHE_ENABLED` | No (defaults to `true`) |
+| `ENRICH_CACHE_DB_PATH` | No (defaults to `./data/enrich_cache.db` locally; `/data/enrich_cache.db` in Docker) |
 | `PORT` | No (defaults to 8000 in Docker) |
 
 All three Supabase values are in your **Supabase Dashboard → Project Settings → API**.
@@ -93,17 +95,22 @@ Build from the `salvai-be/` directory:
 docker build -t salvai-be .
 ```
 
-Run with an env file and restart policy:
+Run with an env file, persistent enrich cache volume, and restart policy:
 
 ```bash
 docker run -d --name salvai-be \
   -p 8000:8000 \
+  -v salvai-enrich-cache:/data \
   --env-file .env \
   --restart unless-stopped \
   salvai-be
 ```
 
+The named volume `salvai-enrich-cache` stores the SQLite enrich cache at `/data/enrich_cache.db` so cached URLs survive container recreate. Without this volume, the cache is lost on every redeploy.
+
 On the VPS, set all required environment variables (see table above). Include your production frontend origin in `CORS_ALLOWED_ORIGINS`. Set `SCRAPER_SERVICE_URL` to the production scraper host (see `.env.example`).
+
+**Coolify:** mount persistent storage at container path `/data` for the same effect. Step-by-step: [`docs/enrich-cache-vps-setup.md`](../docs/enrich-cache-vps-setup.md).
 
 Optional: set `WEB_CONCURRENCY` in `.env` to tune uvicorn worker count (default `2` in the Docker image).
 
@@ -133,6 +140,7 @@ docker build -t salvai-be .
 docker stop salvai-be && docker rm salvai-be
 docker run -d --name salvai-be \
   -p 8000:8000 \
+  -v salvai-enrich-cache:/data \
   --env-file .env \
   --restart unless-stopped \
   salvai-be

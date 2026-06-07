@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     scraper_service_url: str = ""
     scraper_api_key: str = ""
 
+    # SQLite cache for GET /api/v1/enrich (shared across uvicorn workers via WAL).
+    enrich_cache_enabled: bool = True
+    enrich_cache_db_path: str = "./data/enrich_cache.db"
+
     # Optional Sentry error monitoring. Leave SENTRY_DSN empty to disable (default for local dev).
     sentry_dsn: str = ""
     sentry_environment: str = "development"

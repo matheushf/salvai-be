@@ -14,6 +14,7 @@ from app.schemas.instagram import PostMetadataResponse
 from app.services.instagram_scraper import (
     InstagramScraperError,
     _build_sessions,
+    _session_for_mode,
     get_post_metadata,
     shortcode_from_identifier,
 )
@@ -229,7 +230,7 @@ def test_build_sessions_anonymous_only_when_no_credentials(monkeypatch: pytest.M
 def test_build_sessions_includes_authenticated_when_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When credentials are set, _build_sessions returns [authenticated, anonymous]."""
+    """When credentials are set, _build_sessions returns [anonymous, authenticated]."""
     fake_instaloader = MagicMock()
     fake_instaloader.load_session_from_file.return_value = None
 
@@ -243,8 +244,19 @@ def test_build_sessions_includes_authenticated_when_configured(
 
     sessions = _build_sessions()
     assert len(sessions) == 2
-    assert sessions[0][0] == "authenticated"
-    assert sessions[1][0] == "anonymous"
+    assert sessions[0][0] == "anonymous"
+    assert sessions[1][0] == "authenticated"
+
+
+def test_session_for_mode_returns_none_for_missing_authenticated_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.get_settings",
+        lambda: MagicMock(instagram_username="", instagram_session_file=""),
+    )
+    assert _session_for_mode("anonymous") is not None
+    assert _session_for_mode("authenticated") is None
 
 
 def test_build_sessions_skips_authenticated_when_session_file_missing(
@@ -267,10 +279,10 @@ def test_build_sessions_skips_authenticated_when_session_file_missing(
     assert sessions[0][0] == "anonymous"
 
 
-def test_get_post_metadata_falls_back_to_anonymous_on_rate_limit(
+def test_get_post_metadata_falls_back_to_authenticated_on_rate_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When authenticated session is rate-limited, fall back to anonymous."""
+    """When anonymous session is rate-limited, fall back to authenticated."""
     from instaloader import QueryReturnedForbiddenException
 
     fake_post = MagicMock()
@@ -291,11 +303,12 @@ def test_get_post_metadata_falls_back_to_anonymous_on_rate_limit(
         return fake_post
 
     monkeypatch.setattr(
-        "app.services.instagram_scraper._build_sessions",
-        lambda: [
-            ("authenticated", MagicMock()),
-            ("anonymous", MagicMock()),
-        ],
+        "app.services.instagram_scraper._session_for_mode",
+        lambda mode: MagicMock() if mode in ("anonymous", "authenticated") else None,
+    )
+    monkeypatch.setattr(
+        "app.services.scraper_client.scraper_is_configured",
+        lambda: False,
     )
     monkeypatch.setattr(
         "app.services.instagram_scraper.instaloader.Post.from_shortcode",
@@ -308,23 +321,118 @@ def test_get_post_metadata_falls_back_to_anonymous_on_rate_limit(
     assert call_count == 2
 
 
-def test_get_post_metadata_raises_when_all_sessions_rate_limited(
+def test_get_post_metadata_falls_back_to_scraper_on_be_rate_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When all sessions hit rate limits, raise after exhausting them."""
+    """When both local sessions are rate-limited, fall back to salvai-scraper."""
     from instaloader import TooManyRequestsException
 
+    scraper_result = PostMetadataResponse(
+        platform="instagram",
+        kind="image",
+        description="From scraper",
+        thumbnailUrl="https://example.com/scraper.jpg",
+        authorHandle="scraper_author",
+        publishedAt=None,
+    )
+
     monkeypatch.setattr(
-        "app.services.instagram_scraper._build_sessions",
-        lambda: [
-            ("authenticated", MagicMock()),
-            ("anonymous", MagicMock()),
-        ],
+        "app.services.instagram_scraper._session_for_mode",
+        lambda mode: MagicMock() if mode in ("anonymous", "authenticated") else None,
+    )
+    monkeypatch.setattr(
+        "app.services.scraper_client.scraper_is_configured",
+        lambda: True,
     )
     monkeypatch.setattr(
         "app.services.instagram_scraper.instaloader.Post.from_shortcode",
         lambda context, shortcode: (_ for _ in ()).throw(
             TooManyRequestsException("429 Too Many Requests")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.scraper_client.fetch_instagram_post",
+        lambda identifier, session: scraper_result
+        if session == "anonymous"
+        else scraper_result,
+    )
+
+    result = get_post_metadata("https://www.instagram.com/p/ABC123/")
+    assert result.description == "From scraper"
+
+
+def test_get_post_metadata_tries_all_four_layers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each layer is attempted in order until one succeeds."""
+    from instaloader import TooManyRequestsException
+
+    attempts: list[str] = []
+    scraper_result = PostMetadataResponse(
+        platform="instagram",
+        kind="video",
+        description="Layer 4 success",
+        thumbnailUrl=None,
+        authorHandle=None,
+        publishedAt=None,
+    )
+
+    def fake_from_shortcode(context, shortcode):
+        attempts.append("be")
+        raise TooManyRequestsException("429")
+
+    def fake_fetch_instagram_post(identifier: str, session: str) -> PostMetadataResponse:
+        attempts.append(f"scraper:{session}")
+        if session == "authenticated":
+            return scraper_result
+        raise InstagramScraperError("rate limit", status_code=429)
+
+    monkeypatch.setattr(
+        "app.services.instagram_scraper._session_for_mode",
+        lambda mode: MagicMock() if mode in ("anonymous", "authenticated") else None,
+    )
+    monkeypatch.setattr(
+        "app.services.scraper_client.scraper_is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.instaloader.Post.from_shortcode",
+        fake_from_shortcode,
+    )
+    monkeypatch.setattr(
+        "app.services.scraper_client.fetch_instagram_post",
+        fake_fetch_instagram_post,
+    )
+
+    result = get_post_metadata("https://www.instagram.com/p/ABC123/")
+    assert result.description == "Layer 4 success"
+    assert attempts == ["be", "be", "scraper:anonymous", "scraper:authenticated"]
+
+
+def test_get_post_metadata_raises_when_all_layers_rate_limited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When all layers hit rate limits, raise after exhausting them."""
+    from instaloader import TooManyRequestsException
+
+    monkeypatch.setattr(
+        "app.services.instagram_scraper._session_for_mode",
+        lambda mode: MagicMock() if mode in ("anonymous", "authenticated") else None,
+    )
+    monkeypatch.setattr(
+        "app.services.scraper_client.scraper_is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.instaloader.Post.from_shortcode",
+        lambda context, shortcode: (_ for _ in ()).throw(
+            TooManyRequestsException("429 Too Many Requests")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.scraper_client.fetch_instagram_post",
+        lambda identifier, session: (_ for _ in ()).throw(
+            InstagramScraperError("rate limit", status_code=429)
         ),
     )
 
@@ -392,3 +500,144 @@ def test_enrich_endpoint_rejects_invalid_url(
 def test_enrich_endpoint_requires_url_param(api_client: TestClient) -> None:
     res = api_client.get("/api/v1/enrich")
     assert res.status_code == 422
+
+
+# ── Enrich SQLite cache ───────────────────────────────────────────
+
+@pytest.fixture
+def enrich_cache_db(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    db_path = str(tmp_path / "enrich_cache.db")
+    mock_settings = MagicMock()
+    mock_settings.enrich_cache_enabled = True
+    mock_settings.enrich_cache_db_path = db_path
+    monkeypatch.setattr("app.services.enrich_cache.get_settings", lambda: mock_settings)
+
+    import app.services.enrich_cache as enrich_cache_module
+
+    enrich_cache_module._initialized_paths.clear()
+    yield db_path
+    enrich_cache_module._initialized_paths.clear()
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_key"),
+    [
+        ("https://www.instagram.com/p/ABC123/", "instagram:ABC123"),
+        ("https://www.instagram.com/reel/ABC123", "instagram:ABC123"),
+        ("https://WWW.Example.COM/event/", "https://www.example.com/event"),
+        ("https://example.com/path#fragment", "https://example.com/path"),
+    ],
+)
+def test_normalize_enrich_url(url: str, expected_key: str) -> None:
+    from app.services.enrich_cache import normalize_enrich_url
+
+    assert normalize_enrich_url(url) == expected_key
+
+
+def test_set_and_get_cached_enrich(enrich_cache_db: str) -> None:
+    from app.services.enrich_cache import get_cached_enrich, set_cached_enrich
+
+    url = "https://example.com/event"
+    response = PostMetadataResponse(
+        platform="unknown",
+        kind="post",
+        description="Event title",
+        thumbnailUrl="https://example.com/thumb.jpg",
+        authorHandle="Sympla",
+        publishedAt=None,
+    )
+
+    set_cached_enrich(url, response)
+    cached = get_cached_enrich(url)
+
+    assert cached == response
+
+
+def test_enrich_url_returns_cached_result_without_second_upstream_call(
+    enrich_cache_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    call_count = 0
+    sample = PostMetadataResponse(
+        platform="tiktok",
+        kind="video",
+        description="Test desc",
+        thumbnailUrl="https://img.example.com/thumb.jpg",
+        authorHandle="testuser",
+        publishedAt=None,
+    )
+
+    def fake_uncached(url: str) -> PostMetadataResponse:
+        nonlocal call_count
+        call_count += 1
+        return sample
+
+    monkeypatch.setattr(
+        "app.services.enrich_dispatcher._enrich_url_uncached", fake_uncached
+    )
+
+    from app.services.enrich_dispatcher import enrich_url
+
+    url = "https://www.tiktok.com/@user/video/123"
+    first = enrich_url(url)
+    second = enrich_url(url)
+
+    assert first == sample
+    assert second == sample
+    assert call_count == 1
+
+
+def test_enrich_url_does_not_cache_upstream_errors(
+    enrich_cache_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_uncached(url: str) -> PostMetadataResponse:
+        raise UpstreamError("upstream failed")
+
+    monkeypatch.setattr(
+        "app.services.enrich_dispatcher._enrich_url_uncached", fake_uncached
+    )
+
+    from app.services.enrich_cache import get_cached_enrich
+    from app.services.enrich_dispatcher import enrich_url
+
+    url = "https://www.tiktok.com/@user/video/456"
+    with pytest.raises(UpstreamError, match="upstream failed"):
+        enrich_url(url)
+
+    assert get_cached_enrich(url) is None
+
+
+def test_enrich_url_skips_cache_when_disabled(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = str(tmp_path / "disabled_enrich_cache.db")
+    mock_settings = MagicMock()
+    mock_settings.enrich_cache_enabled = False
+    mock_settings.enrich_cache_db_path = db_path
+    monkeypatch.setattr("app.services.enrich_cache.get_settings", lambda: mock_settings)
+
+    call_count = 0
+    sample = PostMetadataResponse(
+        platform="unknown",
+        kind="post",
+        description="Event",
+        thumbnailUrl=None,
+        authorHandle=None,
+        publishedAt=None,
+    )
+
+    def fake_uncached(url: str) -> PostMetadataResponse:
+        nonlocal call_count
+        call_count += 1
+        return sample
+
+    monkeypatch.setattr(
+        "app.services.enrich_dispatcher._enrich_url_uncached", fake_uncached
+    )
+
+    from app.services.enrich_dispatcher import enrich_url
+
+    url = "https://example.com/event"
+    enrich_url(url)
+    enrich_url(url)
+
+    assert call_count == 2

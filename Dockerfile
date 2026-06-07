@@ -10,7 +10,10 @@ RUN uv sync --frozen --no-dev
 
 COPY app ./app
 
+RUN mkdir -p /data
+
 ENV PATH="/app/.venv/bin:$PATH"
+ENV ENRICH_CACHE_DB_PATH=/data/enrich_cache.db
 
 # Default port for manual docker run; runtime port follows PORT (e.g. Coolify injects 3000).
 EXPOSE 8000
