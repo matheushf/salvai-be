@@ -202,8 +202,8 @@ def list_profile_upcoming_events(
 
 def get_event(client: Client, event_id: str, requester_id: str) -> EventResponse:
     """
-    Return the event if the requester is the author or follows the author
-    on a publicly visible feed event.
+    Return the event if the requester is the author, or the event is public
+    (visible_in_feed).
 
     Raises NotFoundError if it does not exist, ForbiddenError if not visible.
     """
@@ -222,18 +222,6 @@ def get_event(client: Client, event_id: str, requester_id: str) -> EventResponse
 
     if not event_data.get("visible_in_feed"):
         raise ForbiddenError("This event is private")
-
-    follow_resp = execute_supabase(
-        client,
-        lambda c: c.table(_FOLLOWS_TABLE)
-        .select("follower_id")
-        .eq("follower_id", requester_id)
-        .eq("followed_id", author_id)
-        .maybe_single()
-        .execute(),
-    )
-    if follow_resp is None:
-        raise ForbiddenError("You can only view events from users you follow")
 
     return EventResponse(**event_data)
 

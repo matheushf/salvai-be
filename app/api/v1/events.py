@@ -55,8 +55,8 @@ def patch_event(
     response_model=EventResponse,
     summary="Get a single event by ID",
     description=(
-        "Returns the event if the requester is the author, or follows the author "
-        "and the event is visible in the feed."
+        "Returns the event if the requester is the author, or the event is public "
+        "(visible in the feed)."
     ),
 )
 def get_event(event_id: str, current_user: CurrentUser, client: AdminClient) -> EventResponse:
