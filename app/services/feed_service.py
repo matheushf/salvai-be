@@ -10,7 +10,7 @@ When the number of followers or events grows significantly, consider moving to a
 precomputed fan-out feed table populated by a Postgres trigger or background job.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 
 from supabase import Client
 
@@ -32,6 +32,7 @@ def get_feed(
     user_id: str,
     cursor: str | None = None,
     limit: int = _DEFAULT_LIMIT,
+    include_past: bool = False,
 ) -> FeedPage:
     limit = min(limit, _MAX_LIMIT)
 
@@ -49,7 +50,7 @@ def get_feed(
 
     events_resp = execute_supabase(
         client,
-        lambda c: _events_query(c, followed_ids, cursor, limit).execute(),
+        lambda c: _events_query(c, followed_ids, cursor, limit, include_past).execute(),
     )
     rows = events_resp.data or []
 
@@ -90,7 +91,13 @@ def get_feed(
     return FeedPage(items=items, next_cursor=next_cursor, has_more=has_more)
 
 
-def _events_query(client: Client, followed_ids: list[str], cursor: str | None, limit: int):
+def _events_query(
+    client: Client,
+    followed_ids: list[str],
+    cursor: str | None,
+    limit: int,
+    include_past: bool = False,
+):
     query = (
         client.table(_EVENTS_TABLE)
         .select("*")
@@ -101,4 +108,6 @@ def _events_query(client: Client, followed_ids: list[str], cursor: str | None, l
     )
     if cursor:
         query = query.lt("created_at", cursor)
+    if not include_past:
+        query = query.gte("date", date.today().isoformat())
     return query

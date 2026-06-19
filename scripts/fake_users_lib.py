@@ -43,7 +43,7 @@ def load_settings_only() -> Any:
     try:
         return get_settings()
     except ValidationError as e:
-        print("Invalid or missing env (see salvai-be/.env.example):", file=sys.stderr)
+        print("Invalid or missing env (see docs/salvai-be-setup-and-env.md):", file=sys.stderr)
         print(e, file=sys.stderr)
         raise SystemExit(1) from e
 

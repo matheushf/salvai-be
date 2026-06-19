@@ -23,5 +23,6 @@ def get_feed(
     client: AdminClient,
     cursor: str | None = Query(default=None, description="Pagination cursor (ISO-8601 timestamp)"),
     limit: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
+    include_past: bool = Query(default=False, description="Include events with a past date"),
 ) -> FeedPage:
-    return feed_svc.get_feed(client, current_user.id, cursor=cursor, limit=limit)
+    return feed_svc.get_feed(client, current_user.id, cursor=cursor, limit=limit, include_past=include_past)

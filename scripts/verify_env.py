@@ -31,7 +31,7 @@ def main() -> int:
         s = get_settings()
     except ValidationError:
         print(
-            "Missing or invalid environment variables. From salvai-be/: copy .env.example to .env "
+            "Missing or invalid environment variables. From salvai-be/: create .env "
             "and fill SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET, "
             "CORS_ALLOWED_ORIGINS.",
             file=sys.stderr,

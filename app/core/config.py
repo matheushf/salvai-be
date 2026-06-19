@@ -38,6 +38,18 @@ class Settings(BaseSettings):
     sentry_traces_sample_rate: float = 0.0
     sentry_release: str = ""
 
+    # Universal / app links for https://salvai.cloud/events/{id}
+    share_base_url: str = "https://salvai.cloud"
+    ios_app_team_id: str = "FTHN8739FL"
+    ios_bundle_id: str = "com.matheushf.salvai"
+    android_package_name: str = "com.matheushf.salvai"
+    # Comma-separated SHA-256 cert fingerprints for Android App Links verification.
+    android_sha256_cert_fingerprints: str = ""
+    ios_app_store_url: str = "https://apps.apple.com/app/salvai/id0000000000"
+    android_play_store_url: str = (
+        "https://play.google.com/store/apps/details?id=com.matheushf.salvai"
+    )
+
     @property
     def allowed_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]

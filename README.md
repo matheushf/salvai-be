@@ -11,10 +11,10 @@ Python backend built with FastAPI, managed with [uv](https://docs.astral.sh/uv/)
 
 ```bash
 uv sync
-cp .env.example .env   # fill in your Supabase credentials
+# Create .env locally (gitignored) — see docs/salvai-be-setup-and-env.md
 ```
 
-Environment variables (see `.env.example` for descriptions):
+Environment variables (see [`docs/salvai-be-setup-and-env.md`](../docs/salvai-be-setup-and-env.md) for descriptions):
 
 | Variable | Required |
 |---|---|
@@ -39,7 +39,7 @@ Optional error reporting via [Sentry](https://sentry.io). Disabled locally when 
 1. Create a Sentry account and a **Python / FastAPI** project.
 2. Copy the project **DSN** from **Settings → Client Keys (DSN)**.
 3. In Sentry, add an alert rule (e.g. email on **new issue** or error spike).
-4. Set variables on the production server (see `.env.example`):
+4. Set variables on the production server (see [`docs/salvai-be-setup-and-env.md`](../docs/salvai-be-setup-and-env.md)):
 
 | Variable | Example | Notes |
 |----------|---------|-------|
@@ -108,7 +108,7 @@ docker run -d --name salvai-be \
 
 The named volume `salvai-enrich-cache` stores the SQLite enrich cache at `/data/enrich_cache.db` so cached URLs survive container recreate. Without this volume, the cache is lost on every redeploy.
 
-On the VPS, set all required environment variables (see table above). Include your production frontend origin in `CORS_ALLOWED_ORIGINS`. Set `SCRAPER_SERVICE_URL` to the production scraper host (see `.env.example`).
+On the VPS, set all required environment variables (see table above). Include your production frontend origin in `CORS_ALLOWED_ORIGINS`. Set `SCRAPER_SERVICE_URL` to the production scraper host (see [`docs/salvai-be-setup-and-env.md`](../docs/salvai-be-setup-and-env.md)).
 
 **Coolify:** mount persistent storage at container path `/data` for the same effect. Step-by-step: [`docs/enrich-cache-vps-setup.md`](../docs/enrich-cache-vps-setup.md).
 
@@ -131,6 +131,40 @@ Verify after deploy:
 
 ```bash
 curl -sS https://api.apps.salvai.cloud/health
+```
+
+### Universal links on `salvai.cloud`
+
+Event share links use `https://salvai.cloud/events/{eventId}`. The backend serves:
+
+- `GET /.well-known/apple-app-site-association`
+- `GET /.well-known/assetlinks.json`
+- `GET /events/{eventId}` (HTML fallback when the app is not installed)
+
+Point **`salvai.cloud`** at the same API container (or reverse-proxy these paths to it). Example Caddy snippet:
+
+```caddy
+salvai.cloud {
+  reverse_proxy localhost:8000
+}
+```
+
+Set on production `.env`:
+
+| Variable | Purpose |
+|---|---|
+| `SHARE_BASE_URL` | Public share host (`https://salvai.cloud`) |
+| `IOS_APP_TEAM_ID` | Apple Team ID for AASA |
+| `ANDROID_SHA256_CERT_FINGERPRINTS` | Release keystore SHA-256 fingerprint(s) for Android App Links |
+| `IOS_APP_STORE_URL` | App Store fallback from the HTML page |
+| `ANDROID_PLAY_STORE_URL` | Play Store fallback from the HTML page |
+
+Verify after deploy:
+
+```bash
+curl -sS https://salvai.cloud/.well-known/apple-app-site-association
+curl -sS https://salvai.cloud/.well-known/assetlinks.json
+curl -sS https://salvai.cloud/events/11111111-2222-4333-8444-555555555555 | head
 ```
 
 Redeploy after code changes:
@@ -259,7 +293,7 @@ Schema migrations live in [`../supabase/migrations/`](../supabase/migrations/) (
 
 ### Verify environment
 
-After `cp .env.example .env`, confirm required variables load (nothing secret is printed in full):
+After creating `.env`, confirm required variables load (nothing secret is printed in full):
 
 ```bash
 uv run python scripts/verify_env.py
