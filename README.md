@@ -133,38 +133,22 @@ Verify after deploy:
 curl -sS https://api.apps.salvai.cloud/health
 ```
 
-### Universal links on `salvai.cloud`
+### Universal links on `app.salvai.cloud`
 
-Event share links use `https://salvai.cloud/events/{eventId}`. The backend serves:
+Event share links use `https://app.salvai.cloud/events/{eventId}`. The **salvai-landing** Next.js site (separate repo) serves:
 
 - `GET /.well-known/apple-app-site-association`
 - `GET /.well-known/assetlinks.json`
 - `GET /events/{eventId}` (HTML fallback when the app is not installed)
 
-Point **`salvai.cloud`** at the same API container (or reverse-proxy these paths to it). Example Caddy snippet:
-
-```caddy
-salvai.cloud {
-  reverse_proxy localhost:8000
-}
-```
-
-Set on production `.env`:
-
-| Variable | Purpose |
-|---|---|
-| `SHARE_BASE_URL` | Public share host (`https://salvai.cloud`) |
-| `IOS_APP_TEAM_ID` | Apple Team ID for AASA |
-| `ANDROID_SHA256_CERT_FINGERPRINTS` | Release keystore SHA-256 fingerprint(s) for Android App Links |
-| `IOS_APP_STORE_URL` | App Store fallback from the HTML page |
-| `ANDROID_PLAY_STORE_URL` | Play Store fallback from the HTML page |
+Point **`app.salvai.cloud`** at the salvai-landing container in Coolify (not the API).
 
 Verify after deploy:
 
 ```bash
-curl -sS https://salvai.cloud/.well-known/apple-app-site-association
-curl -sS https://salvai.cloud/.well-known/assetlinks.json
-curl -sS https://salvai.cloud/events/11111111-2222-4333-8444-555555555555 | head
+curl -sS https://app.salvai.cloud/.well-known/apple-app-site-association
+curl -sS https://app.salvai.cloud/.well-known/assetlinks.json
+curl -sS https://app.salvai.cloud/events/11111111-2222-4333-8444-555555555555 | head
 ```
 
 Redeploy after code changes:

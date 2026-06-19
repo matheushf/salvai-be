@@ -7,7 +7,6 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.links import router as links_router
 from app.api.v1 import router as v1_router
 from app.core.config import get_settings
 from app.core.exceptions import (
@@ -52,7 +51,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(links_router)
 app.include_router(v1_router)
 
 
