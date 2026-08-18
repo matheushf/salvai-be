@@ -102,23 +102,24 @@ def test_upcoming_sort_day_includes_iso_start_and_multi_day_end(fixed_today: Non
     assert event_svc._upcoming_sort_day(past_row, _TODAY.date()) is None
 
 
-def test_follower_sees_upcoming_feed_visible_capped_at_two(fixed_today: None) -> None:
+def test_follower_sees_upcoming_feed_visible_capped_at_four(fixed_today: None) -> None:
     rows = [
         _event_row("e1", date="10/09/2026", title="Later"),
         _event_row("e2", date="15/08/2026", title="Soon"),
         _event_row("e3", date="20/10/2026", title="Latest"),
         _event_row("e4", date="01/01/2026", title="Past"),
         _event_row("e5", date="2026-07-01", title="ISO"),
+        _event_row("e6", date="01/11/2026", title="Last"),
     ]
     client = _mock_client(following=True, event_rows=rows)
 
     out = event_svc.list_profile_upcoming_events(client, AUTHOR, VIEWER)
 
-    assert len(out.items) == 2
+    assert len(out.items) == 4
     titles = {item.title for item in out.items}
     assert "Past" not in titles
     assert "Soon" in titles
-    assert "Later" in titles or "ISO" in titles
+    assert "Last" not in titles
 
 
 def test_non_follower_gets_empty_list(fixed_today: None) -> None:

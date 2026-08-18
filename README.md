@@ -11,7 +11,7 @@ Python backend built with FastAPI, managed with [uv](https://docs.astral.sh/uv/)
 
 ```bash
 uv sync
-# Create .env locally (gitignored) — see docs/salvai-be-setup-and-env.md
+# Copy .env.example to .env (gitignored) — see docs/salvai-be-setup-and-env.md
 ```
 
 Environment variables (see [`docs/salvai-be-setup-and-env.md`](../docs/salvai-be-setup-and-env.md) for descriptions):
@@ -26,6 +26,12 @@ Environment variables (see [`docs/salvai-be-setup-and-env.md`](../docs/salvai-be
 | `SENTRY_ENVIRONMENT` | No (defaults to `development`) |
 | `ENRICH_CACHE_ENABLED` | No (defaults to `true`) |
 | `ENRICH_CACHE_DB_PATH` | No (defaults to `./data/enrich_cache.db` locally; `/data/enrich_cache.db` in Docker) |
+| `GROQ_API_KEY` | No (required for `POST /api/v1/enrich/extract`; empty returns an empty extraction) |
+| `GROQ_MODEL` | No (defaults to `llama-3.3-70b-versatile`) |
+| `CHOCO_DATA_API_KEY` | No (required in production for the default Instagram path) |
+| `INSTAGRAM_CHOCODATA_ENABLED` | No (defaults to `true`) |
+| `INTERNAL_NOTIFICATIONS_KEY` | Yes (production, for reminder push cron) |
+| `EXPO_ACCESS_TOKEN` | No (Expo Push enhanced security) |
 | `PORT` | No (defaults to 8000 in Docker) |
 
 All three Supabase values are in your **Supabase Dashboard → Project Settings → API**.
@@ -85,9 +91,75 @@ docker run -p 8000:8000 \
   salvai-be
 ```
 
+## Deploying on Cloud Run (MVP production)
+
+MVP production runs on [Google Cloud Run](https://cloud.google.com/run) in the **`salvai`** GCP project, region **`us-east1`** (Always Free compute region). Postgres/Auth stay on Supabase. The service **scales to zero** when idle — you are not billed for idle time (unlike always-on VPS/Render keep-alive).
+
+Cost guardrails baked into [`scripts/deploy-cloudrun.sh`](scripts/deploy-cloudrun.sh):
+
+- `min-instances=0`, `max-instances=1`, `512Mi`, `cpu-throttling`, no CPU boost
+- `WEB_CONCURRENCY=1` (set via env on deploy)
+- No custom domain / load balancer (use the `*.run.app` URL)
+
+Set a **billing budget alert** on the project (~R$ 1) in GCP Console or via `gcloud billing budgets create`.
+
+### One-time setup
+
+```bash
+gcloud config set project salvai
+gcloud billing projects describe salvai
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
+```
+
+Grant Cloud Build permission to deploy (first deploy may prompt; or run once):
+
+```bash
+PROJECT_NUMBER="$(gcloud projects describe salvai --format='value(projectNumber)')"
+gcloud projects add-iam-policy-binding salvai \
+  --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+  --role="roles/run.admin"
+gcloud iam service-accounts add-iam-policy-binding \
+  "${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+  --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+  --role="roles/iam.serviceAccountUser"
+```
+
+### Deploy / redeploy
+
+Copy production secrets into `.env.prod` (gitignored), then:
+
+```bash
+chmod +x scripts/deploy-cloudrun.sh
+./scripts/deploy-cloudrun.sh .env.prod
+```
+
+First build uses Cloud Build from the Dockerfile (~5–10 min). Verify:
+
+```bash
+curl -sS "$(gcloud run services describe salvai-be --region us-east1 --format='value(status.url)')/health"
+# → {"status":"ok"}
+```
+
+The enrich SQLite cache at `/data` is **ephemeral** (no persistent disk). Cache misses only.
+
+### Cut over the mobile app
+
+```bash
+cd ../salvai-fe
+eas secret:create --name EXPO_PUBLIC_SALVAI_API_BASE_URL --value https://salvai-be-76v7wwgxga-ue.a.run.app --force
+```
+
+Ship a new EAS build (`EXPO_PUBLIC_*` is baked in). Local dev: same URL in `.env.development.local`.
+
+Optional later: `GET /health` on app start to hide cold starts (~1–3s). Reminder push cron: Cloud Scheduler hitting `/api/v1/internal/notifications/dispatch` (not required for MVP).
+
+## Deploying on Render (alternative free tier)
+
+Legacy blueprint: [`render.yaml`](render.yaml). Prefer Cloud Run for faster cold starts and scale-to-zero billing.
+
 ## Deploying on Hetzner VPS (Docker)
 
-Production runs on a self-hosted Hetzner VPS at `https://api.apps.salvai.cloud`. TLS is handled by a reverse proxy (Caddy or nginx) that forwards to the container on `localhost:8000`.
+The previous always-on host is a Hetzner VPS at `https://api.apps.salvai.cloud`. Keep this path for persistent enrich cache or if you leave Cloud Run.
 
 Build from the `salvai-be/` directory:
 
@@ -135,17 +207,20 @@ curl -sS https://api.apps.salvai.cloud/health
 
 ### Universal links on `app.salvai.cloud`
 
-Event share links use `https://app.salvai.cloud/events/{eventId}`. The **salvai-landing** Next.js site (separate repo) serves:
+Event share links use `https://app.salvai.cloud/events/{eventId}`. Host **salvai-landing** on **Vercel** (project `salvai-landing`) and attach custom domain `app.salvai.cloud`. That site serves:
 
 - `GET /.well-known/apple-app-site-association`
 - `GET /.well-known/assetlinks.json`
 - `GET /events/{eventId}` (HTML fallback when the app is not installed)
 
-Point **`app.salvai.cloud`** at the salvai-landing container in Coolify (not the API).
+Do **not** point this hostname at Coolify / the API / `landing.apps.salvai.cloud`. In Vercel → salvai-landing → Domains, add `app.salvai.cloud`, then CNAME `app` to `cname.vercel-dns.com` (or the target Vercel shows). AASA must be served over HTTPS with **no redirect**.
 
-Verify after deploy:
+Until DNS is cut over, the same files are live at `https://salvai-landing.vercel.app`.
+
+Verify after DNS is live:
 
 ```bash
+curl -sSI https://app.salvai.cloud/.well-known/apple-app-site-association
 curl -sS https://app.salvai.cloud/.well-known/apple-app-site-association
 curl -sS https://app.salvai.cloud/.well-known/assetlinks.json
 curl -sS https://app.salvai.cloud/events/11111111-2222-4333-8444-555555555555 | head
@@ -226,6 +301,29 @@ GET /api/v1/feed?cursor=<iso_ts>&limit=<n>
 Returns events from users the current user follows, newest first.
 Cursor-based pagination: use `next_cursor` from the response as the `cursor` param on the next request.
 
+### Devices (authenticated)
+
+```
+PUT    /api/v1/devices/push-token     # upsert Expo push token + timezone
+DELETE /api/v1/devices/push-token     # remove this device token (`expo_push_token` query)
+```
+
+### Internal notifications (service key)
+
+```
+POST /api/v1/internal/notifications/dispatch
+```
+
+Protected by header `X-Api-Key: INTERNAL_NOTIFICATIONS_KEY` (403 if the key is empty or wrong). Call this every 5 minutes (Render: external scheduler; Hetzner: host cron):
+
+```
+*/5 * * * * curl -fsS -X POST \
+  -H "X-Api-Key: $INTERNAL_NOTIFICATIONS_KEY" \
+  https://<your-service>.onrender.com/api/v1/internal/notifications/dispatch
+```
+
+See [`docs/event-notifications-phase2.md`](../docs/event-notifications-phase2.md) for Expo Push, FCM/APNs credentials, and the hybrid local/remote delivery rule.
+
 ## Feed performance
 
 The v1 feed is computed on read: for each request it fetches the follow list and then queries events authored by those users. This is simple and correct for small to medium follow graphs.
@@ -253,7 +351,9 @@ app/
 │       ├── profiles.py    # /api/v1/profiles/*
 │       ├── follows.py     # /api/v1/follows/*
 │       ├── events.py      # /api/v1/events/*
-│       └── feed.py        # /api/v1/feed
+│       ├── feed.py        # /api/v1/feed
+│       ├── devices.py     # /api/v1/devices/push-token
+│       └── internal_notifications.py  # cron dispatch
 ├── schemas/
 │   ├── user.py            # AuthenticatedUser
 │   ├── profile.py         # ProfileResponse, ProfileUpdate
@@ -266,6 +366,9 @@ app/
     ├── follows.py         # follow_user, unfollow_user, list_following
     ├── events_service.py  # create_event, get_event, delete_event
     ├── feed_service.py    # get_feed (read-time aggregation)
+    ├── devices.py         # Expo push token upsert/delete
+    ├── event_reminders.py # reminder datetime math
+    ├── notifications.py   # Expo Push dispatch
     └── instagram_scraper.py
 ```
 

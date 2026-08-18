@@ -19,6 +19,7 @@ from app.services.instagram_scraper import (
     shortcode_from_identifier,
 )
 from app.services.ssrf_validator import validate_url_safety
+from app.services.event_extraction import iso_to_display_date
 from app.services.tiktok_service import enrich_tiktok, is_tiktok_url
 
 
@@ -63,6 +64,8 @@ _OEMBED_RESPONSE = {
 def _mock_httpx_response(json_data: dict, status_code: int = 200) -> MagicMock:
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status_code
+    resp.is_success = 200 <= status_code < 300
+    resp.headers = {}
     resp.json.return_value = json_data
     resp.raise_for_status.return_value = None
     return resp
@@ -210,6 +213,13 @@ def test_webpage_enrich_raises_upstream_when_scraper_fails(
 
 # ── Instagram scraper ──────────────────────────────────────────────
 
+def _disable_chocodata(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock = MagicMock()
+    mock.instagram_chocodata_enabled = False
+    mock.choco_data_api_key = ""
+    monkeypatch.setattr("app.services.instagram_scraper.get_settings", lambda: mock)
+
+
 def test_shortcode_extracts_from_url() -> None:
     assert shortcode_from_identifier("https://www.instagram.com/p/ABC123/") == "ABC123"
     assert shortcode_from_identifier("https://www.instagram.com/reel/XYZ789/") == "XYZ789"
@@ -293,6 +303,7 @@ def test_get_post_metadata_falls_back_to_authenticated_on_rate_limit(
     fake_post.owner_username = "author"
     fake_post.date_utc.isoformat.return_value = "2026-05-22T12:00:00"
 
+    _disable_chocodata(monkeypatch)
     call_count = 0
 
     def fake_from_shortcode(context, shortcode):
@@ -336,6 +347,7 @@ def test_get_post_metadata_falls_back_to_scraper_on_be_rate_limit(
         publishedAt=None,
     )
 
+    _disable_chocodata(monkeypatch)
     monkeypatch.setattr(
         "app.services.instagram_scraper._session_for_mode",
         lambda mode: MagicMock() if mode in ("anonymous", "authenticated") else None,
@@ -387,6 +399,7 @@ def test_get_post_metadata_tries_all_four_layers(
             return scraper_result
         raise InstagramScraperError("rate limit", status_code=429)
 
+    _disable_chocodata(monkeypatch)
     monkeypatch.setattr(
         "app.services.instagram_scraper._session_for_mode",
         lambda mode: MagicMock() if mode in ("anonymous", "authenticated") else None,
@@ -415,6 +428,7 @@ def test_get_post_metadata_raises_when_all_layers_rate_limited(
     """When all layers hit rate limits, raise after exhausting them."""
     from instaloader import TooManyRequestsException
 
+    _disable_chocodata(monkeypatch)
     monkeypatch.setattr(
         "app.services.instagram_scraper._session_for_mode",
         lambda mode: MagicMock() if mode in ("anonymous", "authenticated") else None,
@@ -438,6 +452,169 @@ def test_get_post_metadata_raises_when_all_layers_rate_limited(
 
     with pytest.raises(InstagramScraperError, match="rate.limit"):
         get_post_metadata("https://www.instagram.com/p/ABC123/")
+
+
+_CHOCODATA_POST = {
+    "id": "DWm8OQKlKvC",
+    "shortcode": "DWm8OQKlKvC",
+    "media_type": "carousel",
+    "is_video": False,
+    "title": "NASA launches Artemis II to the moon!",
+    "author": "agpfoto",
+    "author_name": None,
+    "images": ["https://example.com/1.jpg"],
+    "thumbnail": "https://example.com/thumb.jpg",
+    "caption": "NASA launches Artemis II to the moon!",
+    "taken_at": "2026-04-02T00:02:44.000Z",
+}
+
+
+def _enable_chocodata(monkeypatch: pytest.MonkeyPatch, api_key: str = "cd_test_key") -> None:
+    mock = MagicMock()
+    mock.instagram_chocodata_enabled = True
+    mock.choco_data_api_key = api_key
+    monkeypatch.setattr("app.services.instagram_scraper.get_settings", lambda: mock)
+
+
+def test_map_chocodata_post_carousel() -> None:
+    from app.services.chocodata_instagram import map_chocodata_post
+
+    result = map_chocodata_post(_CHOCODATA_POST)
+    assert result.platform == "instagram"
+    assert result.kind == "carousel"
+    assert result.description == "NASA launches Artemis II to the moon!"
+    assert result.thumbnailUrl == "https://example.com/thumb.jpg"
+    assert result.authorHandle == "agpfoto"
+    assert result.publishedAt == "2026-04-02T00:02:44.000Z"
+
+
+def test_map_chocodata_post_reel_without_taken_at() -> None:
+    from app.services.chocodata_instagram import map_chocodata_post
+
+    result = map_chocodata_post(
+        {
+            "media_type": "video",
+            "product_type": "clips",
+            "is_video": True,
+            "caption": "Event this Saturday",
+            "author": "venue",
+            "thumbnail": "https://example.com/reel.jpg",
+            "taken_at": None,
+        }
+    )
+    assert result.kind == "video"
+    assert result.description == "Event this Saturday"
+    assert result.publishedAt is None
+    assert result.authorHandle == "venue"
+
+
+def test_map_chocodata_post_uses_first_image_when_thumbnail_missing() -> None:
+    from app.services.chocodata_instagram import map_chocodata_post
+
+    result = map_chocodata_post(
+        {
+            "media_type": "image",
+            "is_video": False,
+            "caption": "Hello",
+            "author": "user",
+            "images": ["https://example.com/first.jpg"],
+        }
+    )
+    assert result.kind == "image"
+    assert result.thumbnailUrl == "https://example.com/first.jpg"
+
+
+def test_get_post_metadata_uses_chocodata_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_chocodata(monkeypatch)
+
+    def fake_get(*args, **kwargs):
+        return _mock_httpx_response(_CHOCODATA_POST)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    instaloader_called = False
+
+    def fail_instaloader(*args, **kwargs):
+        nonlocal instaloader_called
+        instaloader_called = True
+        raise AssertionError("instaloader should not run when ChocoData is enabled")
+
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.instaloader.Post.from_shortcode",
+        fail_instaloader,
+    )
+
+    result = get_post_metadata("https://www.instagram.com/p/DWm8OQKlKvC/")
+    assert result.description == "NASA launches Artemis II to the moon!"
+    assert result.authorHandle == "agpfoto"
+    assert result.kind == "carousel"
+    assert instaloader_called is False
+
+
+def test_get_post_metadata_chocodata_item_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_chocodata(monkeypatch)
+
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 404
+    resp.is_success = False
+    resp.headers = {}
+    resp.json.return_value = {
+        "error": "item_not_found",
+        "message": "not found",
+        "request_id": "req_test",
+    }
+
+    monkeypatch.setattr(httpx, "get", lambda *args, **kwargs: resp)
+
+    with pytest.raises(InstagramScraperError, match="does not exist") as exc_info:
+        get_post_metadata("https://www.instagram.com/p/missing/")
+    assert exc_info.value.status_code == 404
+
+
+def test_get_post_metadata_falls_back_to_instaloader_when_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock = MagicMock()
+    mock.instagram_chocodata_enabled = True
+    mock.choco_data_api_key = "   "
+    monkeypatch.setattr("app.services.instagram_scraper.get_settings", lambda: mock)
+
+    fake_post = MagicMock()
+    fake_post.typename = "GraphImage"
+    fake_post.is_video = False
+    fake_post.caption = "From instaloader"
+    fake_post.url = "https://example.com/img.jpg"
+    fake_post.owner_username = "author"
+    fake_post.date_utc.isoformat.return_value = "2026-05-22T12:00:00"
+
+    monkeypatch.setattr(
+        "app.services.instagram_scraper._session_for_mode",
+        lambda mode: MagicMock() if mode == "anonymous" else None,
+    )
+    monkeypatch.setattr(
+        "app.services.scraper_client.scraper_is_configured",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.instaloader.Post.from_shortcode",
+        lambda context, shortcode: fake_post,
+    )
+
+    chocodata_called = False
+
+    def fail_chocodata(*args, **kwargs):
+        nonlocal chocodata_called
+        chocodata_called = True
+        raise AssertionError("ChocoData should not run without an API key")
+
+    monkeypatch.setattr(httpx, "get", fail_chocodata)
+
+    result = get_post_metadata("https://www.instagram.com/p/ABC123/")
+    assert result.description == "From instaloader"
+    assert chocodata_called is False
 
 
 # ── API integration tests ─────────────────────────────────────────
@@ -641,3 +818,39 @@ def test_enrich_url_skips_cache_when_disabled(
     enrich_url(url)
 
     assert call_count == 2
+
+
+# ── Event extraction (Groq via backend) ───────────────────────────
+
+
+def test_extract_endpoint_returns_empty_when_groq_not_configured(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_settings = MagicMock()
+    mock_settings.groq_api_key = ""
+    mock_settings.groq_model = "llama-3.3-70b-versatile"
+    monkeypatch.setattr(
+        "app.services.event_extraction.get_settings", lambda: mock_settings
+    )
+
+    res = api_client.post(
+        "/api/v1/enrich/extract",
+        json={"description": "Show no Allianz Parque dia 03/07/2025 às 20:00"},
+    )
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["title"] is None
+    assert body["dates"] == []
+    assert body["location"] is None
+
+
+def test_extract_endpoint_rejects_empty_description(api_client: TestClient) -> None:
+    res = api_client.post("/api/v1/enrich/extract", json={"description": ""})
+    assert res.status_code == 422
+
+
+def test_iso_to_display_date_accepts_display_and_iso() -> None:
+    assert iso_to_display_date("03/07/2025") == "03/07/2025"
+    assert iso_to_display_date("2025-07-03") == "03/07/2025"
+    assert iso_to_display_date("not-a-date") is None

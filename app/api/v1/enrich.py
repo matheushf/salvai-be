@@ -4,6 +4,11 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.schemas.instagram import PostMetadataResponse
 from app.services.enrich_dispatcher import enrich_url
+from app.services.event_extraction import (
+    EventExtractionRequest,
+    EventExtractionResponse,
+    extract_event_from_description,
+)
 from app.services.ssrf_validator import validate_url_safety
 
 router = APIRouter(prefix="/enrich", tags=["enrich"])
@@ -46,3 +51,17 @@ def get_enrich(
         )
 
     return enrich_url(decoded)
+
+
+@router.post(
+    "/extract",
+    response_model=EventExtractionResponse,
+    summary="Extract event fields from a post caption",
+    description=(
+        "Uses Groq (server-side) to extract title, location, dates, and times "
+        "from a social caption. Returns an empty result when Groq is not "
+        "configured or extraction fails."
+    ),
+)
+def post_extract(body: EventExtractionRequest) -> EventExtractionResponse:
+    return extract_event_from_description(body.description)

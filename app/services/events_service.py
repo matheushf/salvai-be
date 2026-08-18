@@ -18,7 +18,7 @@ _FOLLOWS_TABLE = "follows"
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 100
 _PROFILE_UPCOMING_FETCH_CAP = 100
-_PROFILE_UPCOMING_MAX_ITEMS = 2
+_PROFILE_UPCOMING_MAX_ITEMS = 4
 
 
 def _parse_dmy_date(value: str) -> date | None:

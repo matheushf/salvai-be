@@ -1,0 +1,46 @@
+# Render Blueprint for the free-tier FastAPI API.
+# https://render.com/docs/blueprint-spec
+#
+# In the Render Dashboard: New → Blueprint → connect matheushf/salvai-be.
+# Secrets use sync: false so they are prompted once and never committed.
+
+services:
+  - type: web
+    name: salvai-be
+    runtime: docker
+    plan: free
+    region: ohio
+    healthCheckPath: /health
+    envVars:
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: SENTRY_ENVIRONMENT
+        value: production
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.0"
+      - key: INSTAGRAM_CHOCODATA_ENABLED
+        value: "true"
+      - key: ENRICH_CACHE_ENABLED
+        value: "true"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: INTERNAL_NOTIFICATIONS_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CHOCO_DATA_API_KEY
+        sync: false
+      - key: SCRAPER_SERVICE_URL
+        sync: false
+      - key: SCRAPER_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: EXPO_ACCESS_TOKEN
+        sync: false

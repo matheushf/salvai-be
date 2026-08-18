@@ -153,6 +153,20 @@ def _fetch_local(shortcode: str, loader: instaloader.Instaloader, label: str) ->
 
 
 def get_post_metadata(identifier: str) -> PostMetadataResponse:
+    settings = get_settings()
+    if settings.instagram_chocodata_enabled:
+        api_key = settings.choco_data_api_key.strip()
+        if api_key:
+            from app.services.chocodata_instagram import fetch_instagram_post
+
+            result = fetch_instagram_post(identifier, api_key)
+            logger.info("Instagram post fetched via chocodata")
+            return result
+        logger.warning(
+            "INSTAGRAM_CHOCODATA_ENABLED is true but CHOCO_DATA_API_KEY is empty; "
+            "falling back to instaloader"
+        )
+
     shortcode = shortcode_from_identifier(identifier)
     last_error: InstagramScraperError | None = None
 

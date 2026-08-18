@@ -57,7 +57,7 @@ def search_public_profiles(
     response_model=ProfileUpcomingEventsResponse,
     summary="Upcoming moments on a user's profile",
     description=(
-        "Returns up to two upcoming events for this profile. "
+        "Returns up to four upcoming events for this profile. "
         "Authors see all their upcoming saved events; followers see feed-visible events only; "
         "non-followers receive an empty list."
     ),

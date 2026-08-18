@@ -52,6 +52,15 @@ def main() -> int:
     print(f"  SUPABASE_JWT_SECRET={_mask(s.supabase_jwt_secret)}")
     print(f"  Expected JWT iss (Supabase access tokens): {s.supabase_jwt_issuer}")
     print(f"  CORS_ALLOWED_ORIGINS={s.cors_allowed_origins!r} -> {s.allowed_origins}")
+    chocodata_key = s.choco_data_api_key.strip()
+    print(f"  INSTAGRAM_CHOCODATA_ENABLED={s.instagram_chocodata_enabled}")
+    print(
+        f"  CHOCO_DATA_API_KEY={_mask(chocodata_key) if chocodata_key else '(empty)'}"
+    )
+    internal_key = s.internal_notifications_key.strip()
+    print(
+        f"  INTERNAL_NOTIFICATIONS_KEY={_mask(internal_key) if internal_key else '(empty)'}"
+    )
     return 0
 
 

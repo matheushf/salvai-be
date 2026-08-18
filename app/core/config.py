@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     # Leave empty (default) to keep the endpoint open (useful in dev).
     instagram_api_key: str = ""
 
+    # Required for POST /api/v1/internal/notifications/dispatch (host cron).
+    # Rejects requests when empty or mismatched.
+    internal_notifications_key: str = ""
+
+    # Optional Expo access token for Push API enhanced security.
+    expo_access_token: str = ""
+
     # Optional Instagram credentials for the scraper. When set, the scraper
     # loads a saved session file instead of hitting the GraphQL API anonymously,
     # which raises the rate-limit ceiling significantly.
@@ -28,9 +35,21 @@ class Settings(BaseSettings):
     scraper_service_url: str = ""
     scraper_api_key: str = ""
 
+    # ChocoData Instagram post API (default enrichment path).
+    # Query-param auth: GET https://api.chocodata.com/api/v1/instagram/post
+    choco_data_api_key: str = ""
+    # When true (default) and CHOCO_DATA_API_KEY is set, skip instaloader.
+    # Set INSTAGRAM_CHOCODATA_ENABLED=false to restore the 4-layer instaloader path.
+    instagram_chocodata_enabled: bool = True
+
     # SQLite cache for GET /api/v1/enrich (shared across uvicorn workers via WAL).
     enrich_cache_enabled: bool = True
     enrich_cache_db_path: str = "./data/enrich_cache.db"
+
+    # Groq for POST /api/v1/enrich/extract (event title/dates from a caption).
+    # Leave empty to disable extraction (endpoint still returns an empty result).
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
 
     # Optional Sentry error monitoring. Leave SENTRY_DSN empty to disable (default for local dev).
     sentry_dsn: str = ""
