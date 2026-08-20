@@ -159,7 +159,11 @@ def get_post_metadata(identifier: str) -> PostMetadataResponse:
         if api_key:
             from app.services.chocodata_instagram import fetch_instagram_post
 
-            result = fetch_instagram_post(identifier, api_key)
+            result = fetch_instagram_post(
+                identifier,
+                api_key,
+                country=settings.choco_data_country,
+            )
             logger.info("Instagram post fetched via chocodata")
             return result
         logger.warning(

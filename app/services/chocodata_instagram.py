@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Mapping
 
 import httpx
 
+from app.core.config import get_settings
 from app.schemas.instagram import PostMetadataResponse
 from app.services.instagram_scraper import InstagramScraperError, shortcode_from_identifier
 
@@ -25,6 +27,7 @@ _RETRYABLE_ERROR_CODES = {
     "capacity",
     "target_unreachable",
 }
+_POST_PATH_RE = re.compile(r"instagram\.com/(p|reel|tv)/([A-Za-z0-9_-]+)", re.IGNORECASE)
 
 
 def _as_str(value: object) -> str | None:
@@ -32,6 +35,26 @@ def _as_str(value: object) -> str | None:
         stripped = value.strip()
         return stripped or None
     return None
+
+
+def canonical_instagram_post_url(identifier: str) -> str:
+    """Return a query-free permalink for ChocoData's `url` param."""
+    match = _POST_PATH_RE.search(identifier)
+    if match:
+        kind, code = match.group(1).lower(), match.group(2)
+        return f"https://www.instagram.com/{kind}/{code}/"
+    shortcode = shortcode_from_identifier(identifier)
+    return f"https://www.instagram.com/p/{shortcode}/"
+
+
+def _unwrap_payload(payload: Mapping[str, object]) -> Mapping[str, object]:
+    if payload.get("caption") or payload.get("title") or payload.get("author"):
+        return payload
+    for key in ("data", "post", "result"):
+        inner = payload.get(key)
+        if isinstance(inner, dict):
+            return inner
+    return payload
 
 
 def _map_kind(payload: Mapping[str, object]) -> str:
@@ -49,6 +72,8 @@ def _map_kind(payload: Mapping[str, object]) -> str:
         return "video"
     if media_type in {"image", "photo"}:
         return "image"
+    if media_type == "post":
+        return "post"
     return "unknown"
 
 
@@ -67,13 +92,17 @@ def _thumbnail_url(payload: Mapping[str, object]) -> str | None:
 
 
 def map_chocodata_post(payload: Mapping[str, object]) -> PostMetadataResponse:
+    payload = _unwrap_payload(payload)
     caption = _as_str(payload.get("caption")) or _as_str(payload.get("title"))
+    data_source = _as_str(payload.get("data_source"))
+    if data_source:
+        logger.info("ChocoData Instagram post data_source=%s", data_source)
     return PostMetadataResponse(
         platform="instagram",
         kind=_map_kind(payload),
         description=caption,
         thumbnailUrl=_thumbnail_url(payload),
-        authorHandle=_as_str(payload.get("author")),
+        authorHandle=_as_str(payload.get("author")) or _as_str(payload.get("author_name")),
         publishedAt=_as_str(payload.get("taken_at")),
     )
 
@@ -103,15 +132,30 @@ def _retry_delay_seconds(response: httpx.Response) -> float:
     return 2.0
 
 
-def fetch_instagram_post(identifier: str, api_key: str) -> PostMetadataResponse:
+def fetch_instagram_post(
+    identifier: str,
+    api_key: str,
+    country: str | None = None,
+) -> PostMetadataResponse:
     shortcode = shortcode_from_identifier(identifier)
+    post_url = canonical_instagram_post_url(identifier)
+    country_code = (country if country is not None else get_settings().choco_data_country)
+    country = country_code.strip().lower()
     last_error: InstagramScraperError | None = None
+
+    params: dict[str, str] = {
+        "api_key": api_key,
+        "shortcode": shortcode,
+        "url": post_url,
+    }
+    if len(country) == 2:
+        params["country"] = country
 
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
             response = httpx.get(
                 _CHOCODATA_POST_URL,
-                params={"api_key": api_key, "shortcode": shortcode},
+                params=params,
                 timeout=_TIMEOUT_SECONDS,
             )
         except httpx.TimeoutException as exc:

@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     # ChocoData Instagram post API (default enrichment path).
     # Query-param auth: GET https://api.chocodata.com/api/v1/instagram/post
     choco_data_api_key: str = ""
+    # ISO-3166 alpha-2 egress pin for ChocoData (dashboard `country` param).
+    choco_data_country: str = "br"
     # When true (default) and CHOCO_DATA_API_KEY is set, skip instaloader.
     # Set INSTAGRAM_CHOCODATA_ENABLED=false to restore the 4-layer instaloader path.
     instagram_chocodata_enabled: bool = True

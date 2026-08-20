@@ -58,6 +58,8 @@ Post:
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _DISPLAY_DATE_RE = re.compile(r"^(\d{2})/(\d{2})/(\d{4})$")
 _ISO_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+_MAX_CAPTION_CHARS = 4000
+_GROQ_MAX_TOKENS = 1024
 
 
 class EventExtractionRequest(BaseModel):
@@ -121,6 +123,12 @@ def _normalize_optional_text(value: object) -> str | None:
     return trimmed or None
 
 
+def _truncate_caption(text: str) -> str:
+    if len(text) <= _MAX_CAPTION_CHARS:
+        return text
+    return text[:_MAX_CAPTION_CHARS].rstrip()
+
+
 def extract_event_from_description(description: str) -> EventExtractionResponse:
     """Call Groq to extract event fields. Never raises; returns empty on failure."""
     text = description.strip()
@@ -129,7 +137,10 @@ def extract_event_from_description(description: str) -> EventExtractionResponse:
 
     settings = get_settings()
     if not settings.groq_api_key.strip():
+        logger.warning("Groq event extraction skipped: GROQ_API_KEY is empty")
         return empty_extraction()
+
+    text = _truncate_caption(text)
 
     try:
         response = httpx.post(
@@ -141,7 +152,7 @@ def extract_event_from_description(description: str) -> EventExtractionResponse:
             json={
                 "model": settings.groq_model,
                 "temperature": 0.1,
-                "max_tokens": 256,
+                "max_tokens": _GROQ_MAX_TOKENS,
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": _SYSTEM_PROMPT},

@@ -26,7 +26,7 @@ Environment variables (see [`docs/salvai-be-setup-and-env.md`](../docs/salvai-be
 | `SENTRY_ENVIRONMENT` | No (defaults to `development`) |
 | `ENRICH_CACHE_ENABLED` | No (defaults to `true`) |
 | `ENRICH_CACHE_DB_PATH` | No (defaults to `./data/enrich_cache.db` locally; `/data/enrich_cache.db` in Docker) |
-| `GROQ_API_KEY` | No (required for `POST /api/v1/enrich/extract`; empty returns an empty extraction) |
+| `GROQ_API_KEY` | Yes in production (required for `POST /api/v1/enrich/extract`; empty returns an empty extraction) |
 | `GROQ_MODEL` | No (defaults to `llama-3.3-70b-versatile`) |
 | `CHOCO_DATA_API_KEY` | No (required in production for the default Instagram path) |
 | `INSTAGRAM_CHOCODATA_ENABLED` | No (defaults to `true`) |

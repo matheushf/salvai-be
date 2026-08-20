@@ -57,6 +57,9 @@ def main() -> int:
     print(
         f"  CHOCO_DATA_API_KEY={_mask(chocodata_key) if chocodata_key else '(empty)'}"
     )
+    groq_key = s.groq_api_key.strip()
+    print(f"  GROQ_API_KEY={_mask(groq_key) if groq_key else '(empty)'}")
+    print(f"  GROQ_MODEL={s.groq_model}")
     internal_key = s.internal_notifications_key.strip()
     print(
         f"  INTERNAL_NOTIFICATIONS_KEY={_mask(internal_key) if internal_key else '(empty)'}"

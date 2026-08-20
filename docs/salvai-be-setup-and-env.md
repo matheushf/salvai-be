@@ -124,10 +124,11 @@ Aligned with [`salvai-be/app/core/config.py`](../salvai-be/app/core/config.py).
 | **`SCRAPER_SERVICE_URL`** | Yes (production) | Base URL of the private [`salvai-scraper`](../salvai-scraper/) service for generic web enrichment and Instagram fallback (layers 3–4). |
 | **`SCRAPER_API_KEY`** | Yes (production) | API key sent to salvai-scraper as **`X-Api-Key`**. |
 | **`CHOCO_DATA_API_KEY`** | Yes (production, for default Instagram path) | ChocoData API key for `GET https://api.chocodata.com/api/v1/instagram/post`. Server-only; never expose to the mobile app. When empty, Instagram enrichment falls back to instaloader even if the flag below is true. |
+| **`CHOCO_DATA_COUNTRY`** | No | ISO-3166 alpha-2 passed to ChocoData as `country` (default **`br`**). |
 | **`INSTAGRAM_CHOCODATA_ENABLED`** | No | Defaults to **`true`**. When true and `CHOCO_DATA_API_KEY` is set, Instagram enrichment uses ChocoData instead of the 4-layer instaloader path. Set **`false`** to restore instaloader without a code rollback. |
 | **`ENRICH_CACHE_ENABLED`** | No | When `true` (default), `GET /api/v1/enrich` responses are cached in SQLite. Set `false` to debug upstream. |
 | **`ENRICH_CACHE_DB_PATH`** | No | SQLite file path. Default `./data/enrich_cache.db` locally; `/data/enrich_cache.db` in the Docker image. Requires persistent `/data` on the VPS — see [`docs/enrich-cache-vps-setup.md`](enrich-cache-vps-setup.md). |
-| **`GROQ_API_KEY`** | No | Server-only Groq key for `POST /api/v1/enrich/extract`. Never put this in `EXPO_PUBLIC_*`. Empty → extraction returns an empty result. |
+| **`GROQ_API_KEY`** | Yes (production, for title/date extraction) | Server-only Groq key for `POST /api/v1/enrich/extract`. Never put this in `EXPO_PUBLIC_*`. Empty → extraction returns an empty result immediately (no Groq call). |
 | **`GROQ_MODEL`** | No | Groq model id (default `llama-3.3-70b-versatile`). |
 | **`INTERNAL_NOTIFICATIONS_KEY`** | Yes (production) | Shared secret for `POST /api/v1/internal/notifications/dispatch`. Send as **`X-Api-Key`**. Empty or mismatch → 403. Host cron uses this key; never expose it to the mobile app. |
 | **`EXPO_ACCESS_TOKEN`** | No | Optional Expo access token sent as `Authorization: Bearer` to the Expo Push API (enhanced security). |

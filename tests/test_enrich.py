@@ -473,6 +473,7 @@ def _enable_chocodata(monkeypatch: pytest.MonkeyPatch, api_key: str = "cd_test_k
     mock = MagicMock()
     mock.instagram_chocodata_enabled = True
     mock.choco_data_api_key = api_key
+    mock.choco_data_country = "br"
     monkeypatch.setattr("app.services.instagram_scraper.get_settings", lambda: mock)
 
 
@@ -506,6 +507,89 @@ def test_map_chocodata_post_reel_without_taken_at() -> None:
     assert result.description == "Event this Saturday"
     assert result.publishedAt is None
     assert result.authorHandle == "venue"
+
+
+def test_map_chocodata_post_caption_div() -> None:
+    from app.services.chocodata_instagram import map_chocodata_post
+
+    result = map_chocodata_post(
+        {
+            "id": "DcQvVNhoBue",
+            "shortcode": "DcQvVNhoBue",
+            "media_type": "post",
+            "is_video": None,
+            "title": "Goiânia entra no clima do Rally dos Sertões 2026",
+            "author": "guiacurtamais",
+            "author_name": None,
+            "images": [],
+            "thumbnail": None,
+            "caption": "Goiânia entra no clima do Rally dos Sertões 2026",
+            "taken_at": None,
+            "data_source": "caption-div",
+        }
+    )
+    assert result.kind == "post"
+    assert result.description == "Goiânia entra no clima do Rally dos Sertões 2026"
+    assert result.authorHandle == "guiacurtamais"
+    assert result.thumbnailUrl is None
+
+
+def test_map_chocodata_post_unwraps_nested_payload() -> None:
+    from app.services.chocodata_instagram import map_chocodata_post
+
+    result = map_chocodata_post(
+        {
+            "success": True,
+            "post": {
+                "media_type": "image",
+                "caption": "Nested caption",
+                "author_name": "nested_user",
+                "thumbnail": "https://example.com/nested.jpg",
+            },
+        }
+    )
+    assert result.description == "Nested caption"
+    assert result.authorHandle == "nested_user"
+    assert result.thumbnailUrl == "https://example.com/nested.jpg"
+
+
+def test_canonical_instagram_post_url_strips_query() -> None:
+    from app.services.chocodata_instagram import canonical_instagram_post_url
+
+    assert (
+        canonical_instagram_post_url(
+            "https://www.instagram.com/p/DcQvVNhoBue/?utm_source=ig_web_button_native_share"
+        )
+        == "https://www.instagram.com/p/DcQvVNhoBue/"
+    )
+    assert (
+        canonical_instagram_post_url("https://www.instagram.com/reel/ABC123/")
+        == "https://www.instagram.com/reel/ABC123/"
+    )
+
+
+def test_fetch_instagram_post_sends_url_and_country(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.chocodata_instagram import fetch_instagram_post
+
+    captured: dict[str, object] = {}
+
+    def fake_get(*args, **kwargs):
+        captured["params"] = kwargs.get("params")
+        return _mock_httpx_response(_CHOCODATA_POST)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    fetch_instagram_post(
+        "https://www.instagram.com/p/DWm8OQKlKvC/?utm_source=ig_web_button_native_share",
+        "cd_test_key",
+        country="br",
+    )
+    params = captured["params"]
+    assert isinstance(params, dict)
+    assert params["shortcode"] == "DWm8OQKlKvC"
+    assert params["url"] == "https://www.instagram.com/p/DWm8OQKlKvC/"
+    assert params["country"] == "br"
+    assert params["api_key"] == "cd_test_key"
 
 
 def test_map_chocodata_post_uses_first_image_when_thumbnail_missing() -> None:
@@ -843,6 +927,17 @@ def test_extract_endpoint_returns_empty_when_groq_not_configured(
     assert body["title"] is None
     assert body["dates"] == []
     assert body["location"] is None
+
+
+def test_truncate_caption_keeps_start() -> None:
+    from app.services.event_extraction import _MAX_CAPTION_CHARS, _truncate_caption
+
+    short = "Rally dos Sertões"
+    assert _truncate_caption(short) == short
+    long = "a" * (_MAX_CAPTION_CHARS + 50)
+    truncated = _truncate_caption(long)
+    assert len(truncated) == _MAX_CAPTION_CHARS
+    assert truncated == "a" * _MAX_CAPTION_CHARS
 
 
 def test_extract_endpoint_rejects_empty_description(api_client: TestClient) -> None:
