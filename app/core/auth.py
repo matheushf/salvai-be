@@ -1,3 +1,4 @@
+import logging
 from functools import lru_cache
 from typing import Annotated
 
@@ -19,10 +20,25 @@ _LEEWAY_SECONDS = 10
 
 _SUPPORTED_ASYM_ALGS = frozenset({"ES256", "RS256"})
 
+logger = logging.getLogger("app.auth")
+
 
 @lru_cache(maxsize=4)
 def _jwks_client(jwks_url: str) -> PyJWKClient:
     return PyJWKClient(jwks_url)
+
+
+def _token_debug_meta(token: str) -> str:
+    """Unverified header/claims for logs. Never includes the token itself."""
+    try:
+        header = jwt.get_unverified_header(token)
+        payload = jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
+        return (
+            f"alg={header.get('alg')} kid={header.get('kid')} "
+            f"iss={payload.get('iss')} aud={payload.get('aud')}"
+        )
+    except Exception:
+        return "unreadable-token"
 
 
 def get_current_user(
@@ -89,11 +105,23 @@ def get_current_user(
                 leeway=_LEEWAY_SECONDS,
             )
         else:
+            logger.warning("jwt_verify_failed %s error=unsupported_alg", _token_debug_meta(token))
             raise credentials_exception
     except ExpiredSignatureError:
         raise expired_exception
+    except HTTPException:
+        raise
     except PyJWTError:
+        logger.warning("jwt_verify_failed %s error=PyJWTError", _token_debug_meta(token))
         raise credentials_exception
+    except Exception as exc:
+        # JWKS/network/crypto failures must not become HTTP 500s.
+        logger.warning(
+            "jwt_verify_failed %s error=%s",
+            _token_debug_meta(token),
+            type(exc).__name__,
+        )
+        raise credentials_exception from exc
 
     user_id: str | None = payload.get("sub")
     if not user_id:

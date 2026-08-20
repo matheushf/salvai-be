@@ -5,8 +5,15 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
+from postgrest.exceptions import APIError
+
 from app.core.exceptions import UpstreamError
-from app.core.supabase import execute_supabase, get_admin_client, reset_admin_client
+from app.core.supabase import (
+    _strip_non_jwt_authorization,
+    execute_supabase,
+    get_admin_client,
+    reset_admin_client,
+)
 
 
 def test_execute_supabase_returns_on_first_success() -> None:
@@ -58,6 +65,41 @@ def test_execute_supabase_does_not_retry_application_errors() -> None:
         execute_supabase(client, lambda c: c.table("profiles").select("*").execute())
 
     assert client.table.return_value.select.return_value.execute.call_count == 1
+
+
+def test_execute_supabase_maps_api_error_to_upstream() -> None:
+    client = MagicMock()
+    err = APIError({"message": "Invalid JWT", "code": "PGRST301", "hint": None, "details": None})
+    client.table.return_value.select.return_value.execute.side_effect = err
+
+    with pytest.raises(UpstreamError, match="Supabase request failed"):
+        execute_supabase(client, lambda c: c.table("profiles").select("*").execute())
+
+
+def test_execute_supabase_returns_none_for_maybe_single_no_rows() -> None:
+    client = MagicMock()
+    err = APIError(
+        {"message": "JSON object requested, multiple (or no) rows returned", "code": "PGRST116"}
+    )
+    client.table.return_value.select.return_value.eq.return_value.maybe_single.return_value.execute.side_effect = err
+
+    result = execute_supabase(
+        client,
+        lambda c: c.table("profiles").select("*").eq("id", "x").maybe_single().execute(),
+    )
+    assert result is None
+
+
+def test_strip_non_jwt_authorization_drops_bearer_secret() -> None:
+    client = MagicMock()
+    client.options.headers = {"Authorization": "Bearer sb_secret_test", "apikey": "sb_secret_test"}
+    client.postgrest.session.headers = {
+        "Authorization": "Bearer sb_secret_test",
+        "apikey": "sb_secret_test",
+    }
+    _strip_non_jwt_authorization(client, "sb_secret_test")
+    assert "Authorization" not in client.postgrest.session.headers
+    assert client.postgrest.session.headers["apikey"] == "sb_secret_test"
 
 
 def test_reset_admin_client_closes_session_and_clears_cache() -> None:

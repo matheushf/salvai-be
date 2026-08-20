@@ -1,0 +1,53 @@
+# Build salvai-be and deploy to Cloud Run on git push (Cloud Build trigger).
+# Does not pass --env-vars-file, so existing Cloud Run secrets stay in place.
+# Only non-secret runtime flags are updated.
+
+substitutions:
+  _SERVICE: salvai-be
+  _REGION: us-east1
+  _AR_REPO: cloud-run-source-deploy
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:$COMMIT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:latest
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:$COMMIT_SHA
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:latest
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:$COMMIT_SHA
+      - --region=${_REGION}
+      - --project=$PROJECT_ID
+      - --platform=managed
+      - --quiet
+      - --min-instances=0
+      - --max-instances=1
+      - --cpu=1
+      - --memory=512Mi
+      - --concurrency=80
+      - --timeout=300
+      - --cpu-throttling
+      - --no-cpu-boost
+      - --allow-unauthenticated
+      - --update-env-vars=WEB_CONCURRENCY=1,SENTRY_ENVIRONMENT=production,SENTRY_TRACES_SAMPLE_RATE=0.0,ENRICH_CACHE_DB_PATH=/data/enrich_cache.db,SENTRY_RELEASE=$COMMIT_SHA
+
+options:
+  logging: CLOUD_LOGGING_ONLY

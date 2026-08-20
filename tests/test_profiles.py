@@ -94,3 +94,25 @@ def test_to_public_includes_location_fields() -> None:
     assert profile.country == "US"
     assert profile.state == "CA"
     assert profile.city == "San Francisco"
+
+
+def test_get_my_profile_upserts_when_maybe_single_has_no_row() -> None:
+    from postgrest.exceptions import APIError
+
+    select_exec = MagicMock()
+    select_exec.execute.side_effect = APIError(
+        {"message": "JSON object requested, multiple (or no) rows returned", "code": "PGRST116"}
+    )
+    upsert_exec = MagicMock()
+    upsert_exec.execute.return_value = MagicMock(data=[_profile_row()])
+
+    mock_table = MagicMock()
+    mock_table.select.return_value.eq.return_value.maybe_single.return_value = select_exec
+    mock_table.upsert.return_value = upsert_exec
+
+    client = MagicMock()
+    client.table.return_value = mock_table
+
+    profile = profile_svc.get_my_profile(client, USER_ID, "test@example.com")
+    assert profile.id == USER_ID
+    assert profile.email == "test@example.com"

@@ -124,7 +124,28 @@ gcloud iam service-accounts add-iam-policy-binding \
   --role="roles/iam.serviceAccountUser"
 ```
 
-### Deploy / redeploy
+### Deploy on git push
+
+Continuous deploy builds this repo using [`cloudbuild.yaml`](./cloudbuild.yaml). Secrets stay on the Cloud Run service (not in git). Each deploy **updates** `WEB_CONCURRENCY`, Sentry env, cache path, and `SENTRY_RELEASE`; it does **not** replace existing `SUPABASE_*` keys.
+
+One-time in GCP Console (needs the GitHub Cloud Build app):
+
+1. Open [salvai-be → Source](https://console.cloud.google.com/run/detail/us-east1/salvai-be/source?project=salvai) → **Set up continuous deployment** (or **Connect repository**).
+2. Repository: this GitHub repo. Branch: `^main$` (or `^master$`).
+3. Build configuration: **Cloud Build configuration file** → `/cloudbuild.yaml`.
+4. Included files filter: the whole repo (this is the API repo).
+5. Confirm Cloud Build’s service account can deploy Cloud Run (`roles/run.admin` + `roles/iam.serviceAccountUser` on the runtime SA — see above).
+
+After that, a push to this repo builds and deploys. Set or fix secrets once under the service **Variables & secrets** tab; later pushes keep them.
+
+Manual deploy from a laptop (still valid for secret rotation):
+
+```bash
+chmod +x scripts/deploy-cloudrun.sh
+./scripts/deploy-cloudrun.sh .env.prod
+```
+
+### Deploy / redeploy (manual)
 
 Copy production secrets into `.env.prod` (gitignored), then:
 
