@@ -31,13 +31,15 @@ Rules for location:
 Rules for dates:
 - Return each date in DD/MM/YYYY format only (zero-padded, e.g. 03/07/2025).
 - Only include dates that refer to concrete event dates (e.g. a show, party, festival, launch).
-- Do NOT include publication/post dates or relative terms like "tomorrow" that you cannot resolve.
+- When day and month are explicit but the year is omitted (e.g. "25 e 26 de agosto", "25/08"), use the current calendar year.
+- Do NOT include publication/post dates or relative terms like "tomorrow" that you cannot resolve to a calendar date.
 - If the event spans a range, return the start date first and the end date last.
 - Include intermediate dates in the array only when they are explicitly mentioned as separate event days; otherwise omit them.
 - If no reliable date is found, return an empty array for dates.
 
 Rules for times:
 - Return startTime and endTime in HH:mm 24-hour format only (e.g. 20:00, 09:30).
+- Convert explicit clock times such as "19h", "às 19h", or "19h30" into HH:mm (19:00, 19:30).
 - Only include times explicitly stated for the event start or end.
 - Do NOT guess times or convert vague phrases like "at night" into a time.
 - If no reliable start time is found, return null for startTime.
@@ -55,7 +57,9 @@ Example when nothing reliable is found:
 {post_block}"""
 
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_HOUR_SUFFIX_RE = re.compile(r"^([01]?\d|2[0-3])h(?:([0-5]\d))?$", re.IGNORECASE)
 _DISPLAY_DATE_RE = re.compile(r"^(\d{2})/(\d{2})/(\d{4})$")
+_DISPLAY_DATE_NO_YEAR_RE = re.compile(r"^(\d{2})/(\d{2})$")
 _ISO_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 _MAX_CAPTION_CHARS = 4000
@@ -100,9 +104,14 @@ def _is_valid_display_date(value: str) -> bool:
     return True
 
 
-def iso_to_display_date(value: str) -> str | None:
+def iso_to_display_date(value: str, today: date | None = None) -> str | None:
     if _is_valid_display_date(value):
         return value
+    no_year = _DISPLAY_DATE_NO_YEAR_RE.fullmatch(value.strip())
+    if no_year:
+        year = (today or date.today()).year
+        candidate = f"{no_year.group(1)}/{no_year.group(2)}/{year}"
+        return candidate if _is_valid_display_date(candidate) else None
     match = _ISO_DATE_RE.match(value)
     if not match:
         return None
@@ -115,7 +124,17 @@ def _normalize_time(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     trimmed = value.strip()
-    return trimmed if _TIME_RE.fullmatch(trimmed) else None
+    if _TIME_RE.fullmatch(trimmed):
+        return trimmed
+    compact = re.sub(r"\s+", "", trimmed)
+    compact = re.sub(r"^(às|as|at)", "", compact, flags=re.IGNORECASE)
+    hour_match = _HOUR_SUFFIX_RE.fullmatch(compact)
+    if hour_match:
+        hour = int(hour_match.group(1))
+        minute = int(hour_match.group(2) or 0)
+        candidate = f"{hour:02d}:{minute:02d}"
+        return candidate if _TIME_RE.fullmatch(candidate) else None
+    return None
 
 
 def _normalize_optional_text(value: object) -> str | None:
@@ -141,14 +160,23 @@ def _post_block(description: str, title: str | None) -> str:
 
 
 def _user_prompt(description: str, title: str | None) -> str:
-    return _USER_PROMPT.replace("{post_block}", _post_block(description, title))
+    today = date.today().strftime("%d/%m/%Y")
+    prompt = _USER_PROMPT.replace("{post_block}", _post_block(description, title))
+    return f"Today's date is {today}.\n\n{prompt}"
 
 
 def _parse_message_json(raw: str) -> dict[str, Any]:
     text = raw.strip()
     if text.startswith("```"):
         text = _FENCE_RE.sub("", text).strip()
-    parsed = json.loads(text)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        parsed = json.loads(text[start : end + 1])
     if not isinstance(parsed, dict):
         raise ValueError("Groq content is not a JSON object")
     return parsed
@@ -171,9 +199,10 @@ def _log_groq_http_error(response: httpx.Response) -> None:
     if isinstance(failed, str) and len(failed) > _FAILED_GENERATION_LOG_CHARS:
         failed = failed[:_FAILED_GENERATION_LOG_CHARS] + "..."
     logger.warning(
-        "Groq event extraction HTTP %s code=%s failed_generation=%s",
+        "Groq event extraction HTTP %s code=%s message=%s failed_generation=%s",
         response.status_code,
         error.get("code"),
+        error.get("message"),
         failed,
     )
 
@@ -183,17 +212,19 @@ def _groq_request_body(
     model: str,
     user_content: str,
     json_object: bool,
+    reasoning_format: str | None = "hidden",
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model,
         "temperature": 0.1,
         "max_tokens": _GROQ_MAX_TOKENS,
-        "reasoning_format": "hidden",
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ],
     }
+    if reasoning_format:
+        body["reasoning_format"] = reasoning_format
     if json_object:
         body["response_format"] = {"type": "json_object"}
     return body
@@ -261,20 +292,24 @@ def extract_event_from_description(
         )
         if response.status_code == 400:
             _log_groq_http_error(response)
-            if _error_payload(response).get("code") == "json_validate_failed":
-                response = httpx.post(
-                    _GROQ_URL,
-                    headers=headers,
-                    json=_groq_request_body(
-                        model=settings.groq_model,
-                        user_content=user_content,
-                        json_object=False,
-                    ),
-                    timeout=20.0,
-                )
+            response = httpx.post(
+                _GROQ_URL,
+                headers=headers,
+                json=_groq_request_body(
+                    model=settings.groq_model,
+                    user_content=user_content,
+                    json_object=False,
+                    reasoning_format=None,
+                ),
+                timeout=20.0,
+            )
         response.raise_for_status()
         payload = response.json()
-        raw = payload["choices"][0]["message"]["content"]
+        message = payload["choices"][0]["message"]
+        raw = message.get("content")
+        if not isinstance(raw, str) or not raw.strip():
+            reasoning = message.get("reasoning")
+            raw = reasoning if isinstance(reasoning, str) else raw
         if not isinstance(raw, str):
             raise ValueError("Groq message content is missing")
         parsed = _parse_message_json(raw)

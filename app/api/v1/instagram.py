@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Security, status
@@ -8,6 +9,7 @@ from app.schemas.instagram import PostMetadataResponse
 from app.services.instagram_scraper import InstagramScraperError, get_post_metadata
 
 router = APIRouter(prefix="/instagram", tags=["instagram"])
+logger = logging.getLogger(__name__)
 
 _api_key_header = APIKeyHeader(name="X-Api-Key", auto_error=False)
 
@@ -55,6 +57,12 @@ def get_post(
     ),
 ) -> PostMetadataResponse:
     try:
-        return get_post_metadata(identifier=identifier)
+        result = get_post_metadata(identifier=identifier)
     except InstagramScraperError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message)
+    logger.info(
+        "Instagram post metadata response identifier=%s payload=%s",
+        identifier,
+        result.model_dump_json(),
+    )
+    return result

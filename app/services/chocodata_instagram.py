@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 import time
@@ -86,6 +87,7 @@ def to_plain_text(value: object) -> str | None:
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"View all comments\s*$", "", text, flags=re.IGNORECASE)
     return text.strip() or None
 
 
@@ -252,6 +254,11 @@ def fetch_instagram_post(
                 raise InstagramScraperError(
                     "ChocoData returned an unexpected payload", status_code=502
                 )
+            logger.info(
+                "ChocoData Instagram post response shortcode=%s payload=%s",
+                shortcode,
+                json.dumps(payload, ensure_ascii=False, default=str),
+            )
             return map_chocodata_post(payload)
 
         if response.status_code == 404 or error_code == "item_not_found":

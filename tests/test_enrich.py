@@ -557,6 +557,17 @@ def test_map_chocodata_post_strips_html_caption() -> None:
     assert "&nbsp;" not in result.description
 
 
+def test_map_chocodata_post_strips_view_all_comments() -> None:
+    from app.services.chocodata_instagram import to_plain_text
+
+    text = to_plain_text(
+        "Festival no MuZa.\nAcesse o link na Bio | Curta Mais.View all comments"
+    )
+    assert text is not None
+    assert "View all comments" not in text
+    assert "Festival no MuZa." in text
+
+
 def test_map_chocodata_post_prepends_distinct_title() -> None:
     from app.services.chocodata_instagram import map_chocodata_post
 
@@ -983,9 +994,18 @@ def test_extract_endpoint_rejects_empty_description(api_client: TestClient) -> N
 
 
 def test_iso_to_display_date_accepts_display_and_iso() -> None:
+    from datetime import date as date_cls
+
+    from app.services.event_extraction import _normalize_time
+
     assert iso_to_display_date("03/07/2025") == "03/07/2025"
     assert iso_to_display_date("2025-07-03") == "03/07/2025"
     assert iso_to_display_date("not-a-date") is None
+    assert iso_to_display_date("25/08", today=date_cls(2026, 8, 25)) == "25/08/2026"
+    assert _normalize_time("19:00") == "19:00"
+    assert _normalize_time("19h") == "19:00"
+    assert _normalize_time("às 19h") == "19:00"
+    assert _normalize_time("19h30") == "19:30"
 
 
 def _enable_groq(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1050,6 +1070,7 @@ def test_extract_event_sends_plain_json_example_and_caption_block(
     assert '["DD/MM/YYYY"] | []' not in user
     assert '{"title": "Rock in Rio"' in user
     assert "Caption:" in user
+    assert "Today's date is" in user
     assert "Show no Allianz Parque dia 03/07/2025 às 20:00" in user
     assert "Title:" in user
     assert "Turnê 2025" in user
@@ -1100,6 +1121,6 @@ def test_extract_event_retries_without_json_mode_on_validate_failed(
     assert len(calls) == 2
     assert calls[0]["response_format"] == {"type": "json_object"}
     assert "response_format" not in calls[1]
-    assert calls[1]["reasoning_format"] == "hidden"
+    assert "reasoning_format" not in calls[1]
     assert result.title == "Festival de Inverno"
     assert result.dates == ["01/07/2025", "03/07/2025"]
