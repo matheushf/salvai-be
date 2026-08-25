@@ -1064,7 +1064,17 @@ def test_extract_event_sends_plain_json_example_and_caption_block(
     body = captured["json"]
     assert isinstance(body, dict)
     assert body["reasoning_format"] == "hidden"
-    assert body["response_format"] == {"type": "json_object"}
+    format_body = body["response_format"]
+    assert isinstance(format_body, dict)
+    assert format_body["type"] == "json_schema"
+    schema_body = format_body["json_schema"]
+    assert isinstance(schema_body, dict)
+    assert schema_body["name"] == "event_extraction"
+    assert schema_body["strict"] is True
+    schema = schema_body["schema"]
+    assert isinstance(schema, dict)
+    assert schema["additionalProperties"] is False
+    assert "title" in schema["properties"]
     user = body["messages"][1]["content"]
     assert "string | null" not in user
     assert '["DD/MM/YYYY"] | []' not in user
@@ -1119,8 +1129,95 @@ def test_extract_event_retries_without_json_mode_on_validate_failed(
     result = extract_event_from_description("Festival de Inverno 01/07 a 03/07/2025")
 
     assert len(calls) == 2
-    assert calls[0]["response_format"] == {"type": "json_object"}
+    first_format = calls[0]["response_format"]
+    assert isinstance(first_format, dict)
+    assert first_format["type"] == "json_schema"
     assert "response_format" not in calls[1]
     assert "reasoning_format" not in calls[1]
     assert result.title == "Festival de Inverno"
     assert result.dates == ["01/07/2025", "03/07/2025"]
+
+
+def test_parse_message_json_accepts_extra_data_after_object() -> None:
+    from app.services.event_extraction import _parse_message_json
+
+    parsed = _parse_message_json(
+        '{"title": "Late Night Concert", "location": "Teatro Sesi", '
+        '"dates": ["27/08/2026"], "startTime": "21:00", "endTime": null, '
+        '"reasoning": "Caption states the concert name, venue, date, and time."}\n'
+        "extra commentary"
+    )
+    assert parsed["title"] == "Late Night Concert"
+    assert parsed["dates"] == ["27/08/2026"]
+
+
+def test_extract_event_parses_retry_content_with_trailing_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.event_extraction import extract_event_from_description
+
+    _enable_groq(monkeypatch)
+
+    def fake_post(*args, **kwargs):
+        payload = kwargs.get("json")
+        assert isinstance(payload, dict)
+        if "response_format" in payload:
+            resp = MagicMock(spec=httpx.Response)
+            resp.status_code = 400
+            resp.json.return_value = {
+                "error": {
+                    "code": "json_validate_failed",
+                    "message": "Failed to validate JSON.",
+                    "failed_generation": "",
+                }
+            }
+            return resp
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"title": "Late Night Concert", "location": "Teatro Sesi", '
+                            '"dates": ["27/08/2026"], "startTime": "21:00", "endTime": null, '
+                            '"reasoning": "Stated in caption."}\n\nnote'
+                        )
+                    }
+                }
+            ]
+        }
+        return resp
+
+    monkeypatch.setattr("app.services.event_extraction.httpx.post", fake_post)
+
+    result = extract_event_from_description(
+        "O Late Night Concert será realizado na quinta-feira, 27 de agosto, às 21h, no Teatro Sesi."
+    )
+    assert result.title == "Late Night Concert"
+    assert result.dates == ["27/08/2026"]
+    assert result.startTime == "21:00"
+    assert result.location == "Teatro Sesi"
+
+
+def test_extract_event_returns_empty_on_blank_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.event_extraction import extract_event_from_description
+
+    _enable_groq(monkeypatch)
+
+    def blank_post(*args, **kwargs):
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.json.return_value = {
+            "choices": [{"message": {"content": "", "reasoning": None}}]
+        }
+        return resp
+
+    monkeypatch.setattr("app.services.event_extraction.httpx.post", blank_post)
+
+    result = extract_event_from_description("Show no Allianz Parque dia 03/07/2025 às 20:00")
+    assert result.title is None
+    assert result.dates == []
+    assert result.reasoning is None

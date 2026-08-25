@@ -65,6 +65,26 @@ _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 _MAX_CAPTION_CHARS = 4000
 _GROQ_MAX_TOKENS = 1536
 _FAILED_GENERATION_LOG_CHARS = 500
+_EXTRACTION_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "title": {"type": ["string", "null"]},
+        "location": {"type": ["string", "null"]},
+        "dates": {"type": "array", "items": {"type": "string"}},
+        "startTime": {"type": ["string", "null"]},
+        "endTime": {"type": ["string", "null"]},
+        "reasoning": {"type": ["string", "null"]},
+    },
+    "required": [
+        "title",
+        "location",
+        "dates",
+        "startTime",
+        "endTime",
+        "reasoning",
+    ],
+    "additionalProperties": False,
+}
 
 
 class EventExtractionRequest(BaseModel):
@@ -165,6 +185,14 @@ def _user_prompt(description: str, title: str | None) -> str:
     return f"Today's date is {today}.\n\n{prompt}"
 
 
+def _clip_for_log(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    if len(value) > _FAILED_GENERATION_LOG_CHARS:
+        return value[:_FAILED_GENERATION_LOG_CHARS] + "..."
+    return value
+
+
 def _parse_message_json(raw: str) -> dict[str, Any]:
     text = raw.strip()
     if text.startswith("```"):
@@ -173,10 +201,9 @@ def _parse_message_json(raw: str) -> dict[str, Any]:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end <= start:
+        if start < 0:
             raise
-        parsed = json.loads(text[start : end + 1])
+        parsed, _end = json.JSONDecoder().raw_decode(text[start:])
     if not isinstance(parsed, dict):
         raise ValueError("Groq content is not a JSON object")
     return parsed
@@ -195,15 +222,12 @@ def _error_payload(response: httpx.Response) -> dict[str, Any]:
 
 def _log_groq_http_error(response: httpx.Response) -> None:
     error = _error_payload(response)
-    failed = error.get("failed_generation")
-    if isinstance(failed, str) and len(failed) > _FAILED_GENERATION_LOG_CHARS:
-        failed = failed[:_FAILED_GENERATION_LOG_CHARS] + "..."
     logger.warning(
         "Groq event extraction HTTP %s code=%s message=%s failed_generation=%s",
         response.status_code,
         error.get("code"),
         error.get("message"),
-        failed,
+        _clip_for_log(error.get("failed_generation")),
     )
 
 
@@ -211,7 +235,7 @@ def _groq_request_body(
     *,
     model: str,
     user_content: str,
-    json_object: bool,
+    structured: bool,
     reasoning_format: str | None = "hidden",
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
@@ -225,8 +249,15 @@ def _groq_request_body(
     }
     if reasoning_format:
         body["reasoning_format"] = reasoning_format
-    if json_object:
-        body["response_format"] = {"type": "json_object"}
+    if structured:
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "event_extraction",
+                "strict": True,
+                "schema": _EXTRACTION_JSON_SCHEMA,
+            },
+        }
     return body
 
 
@@ -286,7 +317,7 @@ def extract_event_from_description(
             json=_groq_request_body(
                 model=settings.groq_model,
                 user_content=user_content,
-                json_object=True,
+                structured=True,
             ),
             timeout=20.0,
         )
@@ -298,21 +329,41 @@ def extract_event_from_description(
                 json=_groq_request_body(
                     model=settings.groq_model,
                     user_content=user_content,
-                    json_object=False,
+                    structured=False,
                     reasoning_format=None,
                 ),
                 timeout=20.0,
             )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            _log_groq_http_error(response)
+            logger.warning(
+                "Groq event extraction failed: HTTP %s",
+                response.status_code,
+            )
+            return empty_extraction()
         payload = response.json()
         message = payload["choices"][0]["message"]
         raw = message.get("content")
         if not isinstance(raw, str) or not raw.strip():
             reasoning = message.get("reasoning")
             raw = reasoning if isinstance(reasoning, str) else raw
-        if not isinstance(raw, str):
-            raise ValueError("Groq message content is missing")
-        parsed = _parse_message_json(raw)
+        if not isinstance(raw, str) or not raw.strip():
+            logger.warning(
+                "Groq event extraction failed: empty content content=%s reasoning=%s",
+                _clip_for_log(message.get("content")),
+                _clip_for_log(message.get("reasoning")),
+            )
+            return empty_extraction()
+        try:
+            parsed = _parse_message_json(raw)
+        except Exception:
+            logger.warning(
+                "Groq event extraction failed: parse error content=%s reasoning=%s",
+                _clip_for_log(message.get("content")),
+                _clip_for_log(message.get("reasoning")),
+                exc_info=True,
+            )
+            return empty_extraction()
     except Exception:
         logger.warning("Groq event extraction failed", exc_info=True)
         return empty_extraction()
