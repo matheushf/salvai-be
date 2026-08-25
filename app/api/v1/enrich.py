@@ -64,4 +64,4 @@ def get_enrich(
     ),
 )
 def post_extract(body: EventExtractionRequest) -> EventExtractionResponse:
-    return extract_event_from_description(body.description)
+    return extract_event_from_description(body.description, title=body.title)

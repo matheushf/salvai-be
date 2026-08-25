@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 import time
+from html.parser import HTMLParser
 from typing import Mapping
 
 import httpx
@@ -28,6 +30,35 @@ _RETRYABLE_ERROR_CODES = {
     "target_unreachable",
 }
 _POST_PATH_RE = re.compile(r"instagram\.com/(p|reel|tv)/([A-Za-z0-9_-]+)", re.IGNORECASE)
+_HTML_HINT_RE = re.compile(
+    r"<(div|span|p|br|h[1-6]|li|ul|ol|a|strong|em|b|i)\b|&nbsp;|&amp;|&lt;",
+    re.IGNORECASE,
+)
+_BLOCK_TAGS = frozenset({"br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"})
+
+
+class _HTMLTextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in _BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in _BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in _BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self._parts.append(data)
+
+    def text(self) -> str:
+        return "".join(self._parts)
 
 
 def _as_str(value: object) -> str | None:
@@ -35,6 +66,35 @@ def _as_str(value: object) -> str | None:
         stripped = value.strip()
         return stripped or None
     return None
+
+
+def to_plain_text(value: object) -> str | None:
+    """Turn ChocoData caption/title HTML into instaloader-like plain text."""
+    raw = _as_str(value)
+    if raw is None:
+        return None
+    text = html.unescape(raw)
+    if _HTML_HINT_RE.search(text):
+        parser = _HTMLTextExtractor()
+        try:
+            parser.feed(text)
+            parser.close()
+        except Exception:
+            logger.warning("Failed to parse ChocoData HTML caption; using unescape only")
+        else:
+            text = parser.text()
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip() or None
+
+
+def _description_from_payload(payload: Mapping[str, object]) -> str | None:
+    caption = to_plain_text(payload.get("caption"))
+    title = to_plain_text(payload.get("title"))
+    if caption and title and title.casefold() not in caption.casefold():
+        return f"{title}\n\n{caption}"
+    return caption or title
 
 
 def canonical_instagram_post_url(identifier: str) -> str:
@@ -93,7 +153,7 @@ def _thumbnail_url(payload: Mapping[str, object]) -> str | None:
 
 def map_chocodata_post(payload: Mapping[str, object]) -> PostMetadataResponse:
     payload = _unwrap_payload(payload)
-    caption = _as_str(payload.get("caption")) or _as_str(payload.get("title"))
+    caption = _description_from_payload(payload)
     data_source = _as_str(payload.get("data_source"))
     if data_source:
         logger.info("ChocoData Instagram post data_source=%s", data_source)

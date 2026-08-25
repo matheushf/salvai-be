@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -534,6 +535,42 @@ def test_map_chocodata_post_caption_div() -> None:
     assert result.thumbnailUrl is None
 
 
+def test_map_chocodata_post_strips_html_caption() -> None:
+    from app.services.chocodata_instagram import map_chocodata_post
+
+    result = map_chocodata_post(
+        {
+            "media_type": "post",
+            "title": "Rally dos Sertões 2026",
+            "author": "guiacurtamais",
+            "caption": (
+                "<div>Goiânia entra no clima do Rally dos Sertões 2026"
+                "<br/>Ingressos em São Paulo</div>"
+            ),
+            "data_source": "caption-div",
+        }
+    )
+    assert result.description is not None
+    assert "<" not in result.description
+    assert "Goiânia entra no clima do Rally dos Sertões 2026" in result.description
+    assert "Ingressos em São Paulo" in result.description
+    assert "&nbsp;" not in result.description
+
+
+def test_map_chocodata_post_prepends_distinct_title() -> None:
+    from app.services.chocodata_instagram import map_chocodata_post
+
+    result = map_chocodata_post(
+        {
+            "media_type": "post",
+            "title": "Rock in Rio",
+            "caption": "Shows no Parque Olímpico dia 13/09",
+            "author": "rockinrio",
+        }
+    )
+    assert result.description == "Rock in Rio\n\nShows no Parque Olímpico dia 13/09"
+
+
 def test_map_chocodata_post_unwraps_nested_payload() -> None:
     from app.services.chocodata_instagram import map_chocodata_post
 
@@ -949,3 +986,120 @@ def test_iso_to_display_date_accepts_display_and_iso() -> None:
     assert iso_to_display_date("03/07/2025") == "03/07/2025"
     assert iso_to_display_date("2025-07-03") == "03/07/2025"
     assert iso_to_display_date("not-a-date") is None
+
+
+def _enable_groq(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_settings = MagicMock()
+    mock_settings.groq_api_key = "gsk_test"
+    mock_settings.groq_model = "qwen/qwen3.6-27b"
+    monkeypatch.setattr(
+        "app.services.event_extraction.get_settings", lambda: mock_settings
+    )
+
+
+def _groq_json_response(content: dict[str, object], status_code: int = 200) -> MagicMock:
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = status_code
+    resp.json.return_value = {
+        "choices": [{"message": {"content": json.dumps(content)}}]
+    }
+    if status_code >= 400:
+        request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "error", request=request, response=resp
+        )
+    else:
+        resp.raise_for_status = MagicMock()
+    return resp
+
+
+def test_extract_event_sends_plain_json_example_and_caption_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.event_extraction import extract_event_from_description
+
+    _enable_groq(monkeypatch)
+    captured: dict[str, object] = {}
+
+    def fake_post(*args, **kwargs):
+        captured["json"] = kwargs.get("json")
+        return _groq_json_response(
+            {
+                "title": "Show Allianz",
+                "location": "Allianz Parque",
+                "dates": ["03/07/2025"],
+                "startTime": "20:00",
+                "endTime": None,
+                "reasoning": "Stated in caption",
+            }
+        )
+
+    monkeypatch.setattr("app.services.event_extraction.httpx.post", fake_post)
+
+    result = extract_event_from_description(
+        "Show no Allianz Parque dia 03/07/2025 às 20:00",
+        title="Turnê 2025",
+    )
+
+    body = captured["json"]
+    assert isinstance(body, dict)
+    assert body["reasoning_format"] == "hidden"
+    assert body["response_format"] == {"type": "json_object"}
+    user = body["messages"][1]["content"]
+    assert "string | null" not in user
+    assert '["DD/MM/YYYY"] | []' not in user
+    assert '{"title": "Rock in Rio"' in user
+    assert "Caption:" in user
+    assert "Show no Allianz Parque dia 03/07/2025 às 20:00" in user
+    assert "Title:" in user
+    assert "Turnê 2025" in user
+    assert result.title == "Show Allianz"
+    assert result.dates == ["03/07/2025"]
+    assert result.startTime == "20:00"
+    assert result.location == "Allianz Parque"
+
+
+def test_extract_event_retries_without_json_mode_on_validate_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.event_extraction import extract_event_from_description
+
+    _enable_groq(monkeypatch)
+    calls: list[dict[str, object]] = []
+
+    def fake_post(*args, **kwargs):
+        payload = kwargs.get("json")
+        assert isinstance(payload, dict)
+        calls.append(payload)
+        if len(calls) == 1:
+            resp = MagicMock(spec=httpx.Response)
+            resp.status_code = 400
+            resp.json.return_value = {
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "json_validate_failed",
+                    "failed_generation": '{"title":',
+                }
+            }
+            return resp
+        return _groq_json_response(
+            {
+                "title": "Festival de Inverno",
+                "location": None,
+                "dates": ["01/07/2025", "03/07/2025"],
+                "startTime": None,
+                "endTime": None,
+                "reasoning": "Recovered on retry",
+            }
+        )
+
+    monkeypatch.setattr("app.services.event_extraction.httpx.post", fake_post)
+
+    result = extract_event_from_description("Festival de Inverno 01/07 a 03/07/2025")
+
+    assert len(calls) == 2
+    assert calls[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in calls[1]
+    assert calls[1]["reasoning_format"] == "hidden"
+    assert result.title == "Festival de Inverno"
+    assert result.dates == ["01/07/2025", "03/07/2025"]
