@@ -1,3 +1,4 @@
+import logging
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -12,6 +13,7 @@ from app.services.event_extraction import (
 from app.services.ssrf_validator import validate_url_safety
 
 router = APIRouter(prefix="/enrich", tags=["enrich"])
+logger = logging.getLogger(__name__)
 
 
 @router.get(
@@ -50,7 +52,13 @@ def get_enrich(
             detail=str(exc),
         )
 
-    return enrich_url(decoded)
+    result = enrich_url(decoded)
+    logger.info(
+        "Enrich URL response url=%s payload=%s",
+        decoded,
+        result.model_dump_json(),
+    )
+    return result
 
 
 @router.post(
@@ -64,4 +72,6 @@ def get_enrich(
     ),
 )
 def post_extract(body: EventExtractionRequest) -> EventExtractionResponse:
-    return extract_event_from_description(body.description, title=body.title)
+    result = extract_event_from_description(body.description, title=body.title)
+    logger.info("Groq extract response payload=%s", result.model_dump_json())
+    return result
