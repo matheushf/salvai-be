@@ -681,7 +681,101 @@ def test_get_post_metadata_uses_chocodata_when_enabled(
     assert result.description == "NASA launches Artemis II to the moon!"
     assert result.authorHandle == "agpfoto"
     assert result.kind == "carousel"
+    assert result.thumbnailUrl == "https://example.com/thumb.jpg"
     assert instaloader_called is False
+
+
+_CHOCODATA_NO_THUMB = {
+    "id": "DcQvVNhoBue",
+    "shortcode": "DcQvVNhoBue",
+    "media_type": "post",
+    "is_video": None,
+    "title": "Goiânia entra no clima do Rally dos Sertões 2026",
+    "author": "guiacurtamais",
+    "author_name": None,
+    "images": [],
+    "thumbnail": None,
+    "caption": "Goiânia entra no clima do Rally dos Sertões 2026",
+    "taken_at": None,
+    "data_source": "caption-div",
+}
+
+
+def test_get_post_metadata_overlays_instaloader_thumbnail_when_chocodata_has_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_chocodata(monkeypatch)
+
+    monkeypatch.setattr(
+        httpx, "get", lambda *args, **kwargs: _mock_httpx_response(_CHOCODATA_NO_THUMB)
+    )
+
+    fake_post = MagicMock()
+    fake_post.url = "https://example.com/from-instaloader.jpg"
+    from_shortcode_calls = 0
+
+    def fake_from_shortcode(context, shortcode):
+        nonlocal from_shortcode_calls
+        from_shortcode_calls += 1
+        assert shortcode == "DcQvVNhoBue"
+        return fake_post
+
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.instaloader.Post.from_shortcode",
+        fake_from_shortcode,
+    )
+    scraper_called = False
+
+    def fail_scraper(*args, **kwargs):
+        nonlocal scraper_called
+        scraper_called = True
+        raise AssertionError("salvai-scraper should not run for thumbnail overlay")
+
+    monkeypatch.setattr(
+        "app.services.scraper_client.fetch_instagram_post",
+        fail_scraper,
+    )
+
+    result = get_post_metadata("https://www.instagram.com/p/DcQvVNhoBue/")
+    assert result.description == "Goiânia entra no clima do Rally dos Sertões 2026"
+    assert result.authorHandle == "guiacurtamais"
+    assert result.kind == "post"
+    assert result.thumbnailUrl == "https://example.com/from-instaloader.jpg"
+    assert from_shortcode_calls == 1
+    assert scraper_called is False
+
+
+def test_get_post_metadata_keeps_chocodata_when_thumbnail_overlay_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from instaloader import TooManyRequestsException
+
+    _enable_chocodata(monkeypatch)
+
+    monkeypatch.setattr(
+        httpx, "get", lambda *args, **kwargs: _mock_httpx_response(_CHOCODATA_NO_THUMB)
+    )
+    monkeypatch.setattr(
+        "app.services.instagram_scraper.instaloader.Post.from_shortcode",
+        MagicMock(side_effect=TooManyRequestsException("rate limit")),
+    )
+    scraper_called = False
+
+    def fail_scraper(*args, **kwargs):
+        nonlocal scraper_called
+        scraper_called = True
+        raise AssertionError("salvai-scraper should not run for thumbnail overlay")
+
+    monkeypatch.setattr(
+        "app.services.scraper_client.fetch_instagram_post",
+        fail_scraper,
+    )
+
+    result = get_post_metadata("https://www.instagram.com/p/DcQvVNhoBue/")
+    assert result.description == "Goiânia entra no clima do Rally dos Sertões 2026"
+    assert result.authorHandle == "guiacurtamais"
+    assert result.thumbnailUrl is None
+    assert scraper_called is False
 
 
 def test_get_post_metadata_chocodata_item_not_found(

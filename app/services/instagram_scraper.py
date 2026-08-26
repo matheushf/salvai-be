@@ -152,6 +152,24 @@ def _fetch_local(shortcode: str, loader: instaloader.Instaloader, label: str) ->
     return _post_to_response(post)
 
 
+def try_instaloader_thumbnail_url(shortcode: str) -> str | None:
+    """Anonymous cover URL only. Fail-open; never uses sessions or salvai-scraper."""
+    loader = _make_instaloader()
+    try:
+        post = instaloader.Post.from_shortcode(loader.context, shortcode)
+    except Exception as exc:
+        logger.warning(
+            "Instaloader thumbnail overlay failed for shortcode=%s: %s",
+            shortcode,
+            exc,
+        )
+        return None
+    url = (post.url or "").strip() or None
+    if url:
+        logger.info("Instagram thumbnail fetched via instaloader overlay")
+    return url
+
+
 def get_post_metadata(identifier: str) -> PostMetadataResponse:
     settings = get_settings()
     if settings.instagram_chocodata_enabled:
@@ -165,6 +183,12 @@ def get_post_metadata(identifier: str) -> PostMetadataResponse:
                 country=settings.choco_data_country,
             )
             logger.info("Instagram post fetched via chocodata")
+            if not result.thumbnailUrl:
+                overlay = try_instaloader_thumbnail_url(
+                    shortcode_from_identifier(identifier)
+                )
+                if overlay:
+                    result = result.model_copy(update={"thumbnailUrl": overlay})
             return result
         logger.warning(
             "INSTAGRAM_CHOCODATA_ENABLED is true but CHOCO_DATA_API_KEY is empty; "
