@@ -11,6 +11,7 @@ from app.schemas.event import (
     EventUpdate,
     ProfileUpcomingEventsResponse,
 )
+from app.services.event_image_storage import remove_owned_event_image
 
 _TABLE = "events"
 _FOLLOWS_TABLE = "follows"
@@ -233,12 +234,18 @@ def update_event(client: Client, event_id: str, user_id: str, body: EventUpdate)
 
     existing = execute_supabase(
         client,
-        lambda c: c.table(_TABLE).select("author_id").eq("id", event_id).maybe_single().execute(),
+        lambda c: c.table(_TABLE)
+        .select("author_id, image")
+        .eq("id", event_id)
+        .maybe_single()
+        .execute(),
     )
     if existing is None:
         raise NotFoundError("Event", event_id)
     if existing.data["author_id"] != user_id:
         raise ForbiddenError("You can only update your own events")
+
+    previous_image = existing.data.get("image")
 
     response = execute_supabase(
         client,
@@ -251,20 +258,33 @@ def update_event(client: Client, event_id: str, user_id: str, body: EventUpdate)
     )
     if not response.data:
         raise UpstreamError("Failed to update event")
+
+    if "image" in patch:
+        next_image = patch.get("image")
+        if previous_image and previous_image != next_image:
+            remove_owned_event_image(client, previous_image, user_id)
+
     return EventResponse(**response.data[0])
 
 
 def delete_event(client: Client, event_id: str, user_id: str) -> None:
     existing = execute_supabase(
         client,
-        lambda c: c.table(_TABLE).select("author_id").eq("id", event_id).maybe_single().execute(),
+        lambda c: c.table(_TABLE)
+        .select("author_id, image")
+        .eq("id", event_id)
+        .maybe_single()
+        .execute(),
     )
     if existing is None:
         raise NotFoundError("Event", event_id)
     if existing.data["author_id"] != user_id:
         raise ForbiddenError("You can only delete your own events")
 
+    image_url = existing.data.get("image")
+
     execute_supabase(
         client,
         lambda c: c.table(_TABLE).delete().eq("id", event_id).execute(),
     )
+    remove_owned_event_image(client, image_url, user_id)
