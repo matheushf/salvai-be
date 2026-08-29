@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import router as v1_router
+from app.core import auth as jwt_auth
 from app.core.config import get_settings
 from app.core.exceptions import (
     AppError,
@@ -36,9 +37,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
-    """Validate required configuration at startup so misconfigured deploys
-    fail immediately rather than at first request."""
+    """Validate required configuration and warm the Supabase JWKS cache."""
     get_settings()  # raises ValidationError if any required env var is missing
+    jwt_auth.prefetch_jwks()
     yield
 
 

@@ -68,6 +68,10 @@ class Settings(BaseSettings):
         """Expected 'iss' claim in Supabase JWTs: <project-url>/auth/v1"""
         return f"{self.supabase_url.rstrip('/')}/auth/v1"
 
+    @property
+    def supabase_jwks_url(self) -> str:
+        return f"{self.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+
 
 @lru_cache
 def get_settings() -> Settings:
