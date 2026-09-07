@@ -153,6 +153,7 @@ activemq-data/
 
 # Local-only state for scripts/seed_fake_users.py → scripts/delete_fake_users.py
 .salvai-fake-users.state.json
+.salvai-screenshot-users.state.json
 
 # Environments
 .env
