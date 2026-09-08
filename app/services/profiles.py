@@ -1,8 +1,9 @@
 import re
 
+from postgrest.exceptions import APIError
 from supabase import Client
 
-from app.core.exceptions import NotFoundError, UpstreamError
+from app.core.exceptions import ConflictError, NotFoundError, UpstreamError
 from app.core.supabase import execute_supabase
 from app.schemas.profile import ProfileMeResponse, ProfileResponse, ProfileUpdate
 
@@ -45,7 +46,25 @@ def _to_me(row: dict) -> ProfileMeResponse:
         **_to_public(row).model_dump(),
         email=row.get("email"),
         birth_date=row.get("birth_date"),
+        onboarding_completed=bool(row.get("onboarding_completed")),
     )
+
+
+def _is_username_unique_violation(exc: BaseException | None) -> bool:
+    if not isinstance(exc, APIError):
+        return False
+    code = str(getattr(exc, "code", "") or "")
+    if code != "23505":
+        return False
+    blob = " ".join(
+        [
+            str(exc),
+            str(getattr(exc, "details", "") or ""),
+            str(getattr(exc, "hint", "") or ""),
+            str(getattr(exc, "message", "") or ""),
+        ]
+    ).lower()
+    return "username" in blob
 
 
 def _ensure_profile_row(
@@ -68,8 +87,21 @@ def _ensure_profile_row(
 
 
 def _sanitize_search_term(raw: str) -> str:
-    cleaned = _ILIKE_SANITIZE.sub("", raw).strip()
+    stripped = raw.strip()
+    if stripped.startswith("@"):
+        stripped = stripped[1:].strip()
+    cleaned = _ILIKE_SANITIZE.sub("", stripped).strip()
     return cleaned[:_MAX_SEARCH_LEN]
+
+
+def _postgrest_quoted_ilike_pattern(term: str) -> str:
+    escaped = term.replace("\\", "\\\\").replace('"', '\\"').replace(",", " ")
+    return f'%{escaped}%'
+
+
+def _profile_search_or_filter(term: str) -> str:
+    pattern = _postgrest_quoted_ilike_pattern(term)
+    return f'username.ilike."{pattern}",display_name.ilike."{pattern}"'
 
 
 def get_my_profile(
@@ -99,10 +131,15 @@ def get_profile(client: Client, user_id: str) -> ProfileResponse:
 
 def upsert_profile(client: Client, user_id: str, update: ProfileUpdate) -> ProfileMeResponse:
     payload = {"id": user_id, **update.model_dump(exclude_unset=True, mode="json")}
-    response = execute_supabase(
-        client,
-        lambda c: c.table(_TABLE).upsert(payload, on_conflict="id").execute(),
-    )
+    try:
+        response = execute_supabase(
+            client,
+            lambda c: c.table(_TABLE).upsert(payload, on_conflict="id").execute(),
+        )
+    except UpstreamError as exc:
+        if _is_username_unique_violation(exc.__cause__):
+            raise ConflictError("Username is already taken") from exc
+        raise
     if not response.data:
         raise UpstreamError("Failed to upsert profile")
     return _to_me(response.data[0])
@@ -117,13 +154,13 @@ def search_profiles(
     limit = min(max(limit, 1), _MAX_SEARCH_RESULTS)
     term = _sanitize_search_term(q or "")
     if term:
-        pattern = f"%{term}%"
+        or_filter = _profile_search_or_filter(term)
         response = execute_supabase(
             client,
             lambda c: c.table(_TABLE)
             .select("*")
             .neq("id", current_user_id)
-            .or_(f"username.ilike.{pattern},display_name.ilike.{pattern}")
+            .or_(or_filter)
             .limit(limit)
             .execute(),
         )

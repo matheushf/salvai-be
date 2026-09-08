@@ -1,9 +1,13 @@
+import re
 from datetime import date, datetime
 
 from pydantic import BaseModel, Field, field_validator
 
 from app.constants.countries import normalize_country, normalize_location_text
 from app.constants.interests import normalize_interests
+
+_USERNAME_RE = re.compile(r"^[a-z0-9_]+$")
+_USERNAME_MIN_LENGTH = 3
 
 
 class ProfileResponse(BaseModel):
@@ -22,6 +26,7 @@ class ProfileResponse(BaseModel):
 class ProfileMeResponse(ProfileResponse):
     email: str | None = None
     birth_date: date | None = None
+    onboarding_completed: bool = False
 
 
 class ProfileUpdate(BaseModel):
@@ -34,6 +39,23 @@ class ProfileUpdate(BaseModel):
     city: str | None = None
     interests: list[str] | None = None
     birth_date: date | None = None
+    onboarding_completed: bool | None = None
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("username is required")
+        if len(normalized) < _USERNAME_MIN_LENGTH:
+            raise ValueError("username must be at least 3 characters")
+        if not _USERNAME_RE.fullmatch(normalized):
+            raise ValueError(
+                "username must contain only lowercase letters, numbers, and underscores"
+            )
+        return normalized
 
     @field_validator("country")
     @classmethod
